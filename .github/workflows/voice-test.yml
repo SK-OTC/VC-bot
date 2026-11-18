@@ -1,0 +1,38 @@
+name: Voice recording test
+
+# Run it by hand: Actions tab > "Voice recording test" > Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      channel_id:
+        description: "Voice channel ID to join"
+        required: true
+      post_channel_id:
+        description: "PRIVATE text channel ID for the report and clips"
+        required: true
+      duration_sec:
+        description: "How long to record, in seconds (10 to 1800)"
+        default: "60"
+
+# Logs and run pages of a public repo are public. This job prints only counts, never audio or names.
+permissions:
+  contents: read
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run the voice test
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          CHANNEL_ID: ${{ inputs.channel_id }}
+          POST_CHANNEL_ID: ${{ inputs.post_channel_id }}
+          DURATION_SEC: ${{ inputs.duration_sec }}
+        run: node record-test.mjs
