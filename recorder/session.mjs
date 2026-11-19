@@ -94,6 +94,17 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
       if (!stored.ok) {
         notes.push(`not saved for /transcript: ${stored.reason}`);
         await io.postText(`This transcript could not be saved for \`/transcript\` search (${stored.reason}). The file above is the only copy.`, { replyTo: posted.messageId }).catch(() => {});
+      } else if (stored.shareUrl) {
+        // The private web link goes only to the team's private channel. <...> stops Discord making a preview card.
+        const until = stored.shareExpiresAt ? ` until <t:${stored.shareExpiresAt}:D>` : '';
+        try {
+          await io.postText(
+            `🔗 **Read it online:** <${stored.shareUrl}>\nAnyone who has this link can read the transcript and summary${until}. Turn it off any time with \`/unshare-transcript\`.`,
+            { replyTo: posted.messageId },
+          );
+        } catch {
+          notes.push('could not post the web link'); // never include the link itself in notes or logs
+        }
       }
     } else {
       notes.push('storage not configured (WORKER_URL / WORKER_SHARED_SECRET)');

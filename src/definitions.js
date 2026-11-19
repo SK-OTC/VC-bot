@@ -192,6 +192,21 @@ export const COMMANDS = [
     ],
   },
   {
+    name: 'share-transcript',
+    description: 'Get a new private web link for a transcript (run it in the transcript channel)',
+    contexts: [0],
+    options: [
+      opt(T.STRING, 'id', 'Transcript ID (default: the latest one in this channel)', { max_length: 6 }),
+      opt(T.INTEGER, 'days', 'How many days the link works (default: 30, max 365)', { min_value: 1, max_value: 365 }),
+    ],
+  },
+  {
+    name: 'unshare-transcript',
+    description: 'Turn off every web link for a transcript (run it in the transcript channel)',
+    contexts: [0],
+    options: [opt(T.STRING, 'id', 'Transcript ID (default: the latest one in this channel)', { max_length: 6 })],
+  },
+  {
     name: 'set-timezone',
     description: 'Set your timezone for meeting times you type',
     contexts: [0],

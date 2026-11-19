@@ -50,6 +50,7 @@ import {
 import { DEFAULT_DURATION_MIN, parseDuration, parseReminder } from './duration.js';
 import { canManageOwner, fail, optionMap, reply } from './replies.js';
 import { cmdStartRecording, cmdStopRecording } from './recording-commands.js';
+import { cmdShareTranscript, cmdUnshareTranscript } from './share-commands.js';
 import { NOT_ENABLED, cmdCalendar, cmdGuests, followupFrom, newEventId, resolveTeam, suggestTeams } from './calendar-commands.js';
 
 const MIN_LEAD_SEC = 60; // a meeting must start at least a minute from now
@@ -730,11 +731,11 @@ async function handleAutocomplete(interaction, ctx) {
  * `defer` runs a promise after the response is sent (ctx.waitUntil in the Worker).
  * `extraHosts` is for the smoke test only; production never sets it.
  */
-export async function handleInteraction(interaction, { db, discord, bridge = null, recorder = null, defer = null, extraHosts = [], nowSec }) {
+export async function handleInteraction(interaction, { db, discord, bridge = null, recorder = null, defer = null, extraHosts = [], env = {}, origin = '', nowSec }) {
   if (interaction.type === InteractionType.PING) return { type: ResponseType.PONG };
 
   const userId = interaction.member?.user?.id ?? interaction.user?.id;
-  const ctx = { db, discord, bridge, recorder, defer, extraHosts, nowSec, interaction, userId, guildId: interaction.guild_id };
+  const ctx = { db, discord, bridge, recorder, defer, extraHosts, env, origin, nowSec, interaction, userId, guildId: interaction.guild_id };
 
   if (interaction.type === InteractionType.AUTOCOMPLETE) return handleAutocomplete(interaction, ctx);
   if (interaction.type !== InteractionType.APPLICATION_COMMAND) return fail('I can only handle slash commands.');
@@ -773,6 +774,10 @@ export async function handleInteraction(interaction, { db, discord, bridge = nul
       return cmdStartRecording(ctx, o);
     case 'stop-recording':
       return cmdStopRecording(ctx, o);
+    case 'share-transcript':
+      return cmdShareTranscript(ctx, o);
+    case 'unshare-transcript':
+      return cmdUnshareTranscript(ctx, o);
   }
   return fail("I don't know that command.");
 }

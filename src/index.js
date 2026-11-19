@@ -78,6 +78,8 @@ export default {
         recorder: makeRecorder(env),
         defer: (promise) => ctx.waitUntil(promise),
         extraHosts: extraBridgeHosts(env),
+        env: { PUBLIC_URL: env.PUBLIC_URL, SHARE_LINK_DAYS: env.SHARE_LINK_DAYS }, // only what the share commands need
+        origin: url.origin,
         nowSec,
       });
       return json(response);

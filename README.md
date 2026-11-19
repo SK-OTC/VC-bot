@@ -223,6 +223,40 @@ Without the token the commands still exist and say recording is not set up. The 
 ends (`POST /api/sessions/<id>/finish`), so an empty meeting or a crash frees the channel. Sessions that never report in
 are cleared automatically after 20 minutes (never started) or 6 hours (running).
 
+### Private web links for transcripts
+
+Every saved transcript gets a private page at `https://<your worker>/t/<token>` showing the summary, action items and
+full transcript. The recorder posts the link in the team's private channel under the transcript. It is made when the
+transcript is stored, so it needs `WORKER_URL` and `WORKER_SHARED_SECRET` to be set on GitHub.
+
+| Command (run it in the transcript's private channel) | What it does |
+|---------|--------------|
+| `/share-transcript [id] [days]` | Makes a new link (default: the latest transcript in this channel, 30 days, up to 365). Only you see the reply |
+| `/unshare-transcript [id]` | Turns off every link for that transcript, including the automatic one |
+
+Settings in `wrangler.toml`: `SHARE_LINK_DAYS` (default 30; `0` turns the automatic links off) and optionally
+`PUBLIC_URL` (an https address, for example your own domain, to build links on instead of the Worker's address).
+
+How it is protected:
+
+* **Unguessable.** A link holds 256 random bits, so it cannot be guessed. Only a hash of it is stored: a database
+  dump or `backup.sql` cannot open any page. Because of that, a lost link cannot be recovered; make a new one.
+* **Same "not available" page** for a wrong, expired, revoked or malformed link, so nobody can probe for real ones.
+* **Expires and can be revoked.** Links stop at their expiry time; `/unshare-transcript` stops them at once.
+  At most 10 live links per transcript. Deleting a transcript deletes its links.
+* **Read-only page with no scripts, images, forms or links.** Everything from speech, speaker names and the summary is
+  HTML-escaped. A strict Content-Security-Policy, `X-Frame-Options: DENY` and `nosniff` are sent on every response.
+* **Not indexed or cached.** `noindex` headers and meta tag, `robots.txt` disallowing everything, `Cache-Control: no-store`,
+  and `Referrer-Policy: no-referrer` so the address is not passed on to other sites.
+* **Not logged.** Neither the Worker nor the recorder ever prints a link, and the recorder posts it only to the private channel.
+* **Only the right people can make links.** The commands work only in the channel the transcript was posted to, so only
+  people who can use that channel can create or revoke its links.
+
+What a link does not protect against: anyone who is given the address can read the page until it expires or is
+turned off (there is no login), and Cloudflare's own request logs for your account include the address. Treat links
+like passwords. For extra protection add a Cloudflare rate-limiting rule for `/t/*` in the dashboard (optional,
+since guessing is not feasible).
+
 The original reminder-bot documentation is in [docs/meeting-time-bot.md](docs/meeting-time-bot.md).
 
 ```

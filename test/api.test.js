@@ -145,7 +145,9 @@ test('POST /api/transcripts: stores the transcript, its chunks and the search in
   const { call, db } = setup();
   const r = await call('POST', '/api/transcripts', { body: payload() });
   assert.equal(r.status, 200);
-  assert.deepEqual(await r.json(), { ok: true, id: 'abc234', chunks: 1 });
+  const answer = await r.json();
+  assert.deepEqual({ ok: answer.ok, id: answer.id, chunks: answer.chunks }, { ok: true, id: 'abc234', chunks: 1 });
+  assert.match(answer.share_url, /^https:\/\/worker\.example\/t\/[A-Za-z0-9_-]{43}$/); // the automatic private link
   const row = db.sql("SELECT * FROM transcripts WHERE id = 'abc234'")[0];
   assert.equal(row.post_channel_id, POST);
   assert.equal(row.started_at, Math.floor(Date.UTC(2026, 10, 19, 10, 0, 0) / 1000));
@@ -299,7 +301,8 @@ test('contract: pipeline/upload.mjs (what session.mjs uses) and the Worker agree
     };
     await addSession(db, 'sess1234', 'running');
     const ok = await uploadTranscript({ url: 'https://worker.example/api/transcripts', secret: SECRET, payload: sessionPayload, sleep: async () => {} });
-    assert.deepEqual(ok, { ok: true });
+    assert.equal(ok.ok, true);
+    assert.match(ok.shareUrl, /^https:\/\/worker\.example\/t\/[A-Za-z0-9_-]{43}$/); // the automatic private link
     const dup = await uploadTranscript({ url: 'https://worker.example/api/transcripts', secret: SECRET, payload: sessionPayload, sleep: async () => {} });
     assert.equal(dup.conflict, true);
     const denied = await uploadTranscript({ url: 'https://worker.example/api/transcripts', secret: 'nope', payload: { ...sessionPayload, id: 'zzzzzz' }, sleep: async () => {} });

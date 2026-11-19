@@ -19,6 +19,11 @@ DISCORD_API_BASE = "https://discord.com/api/v10"
 #   npx wrangler secret put GITHUB_DISPATCH_TOKEN   (fine-grained token, this repo only, "Actions: Read and write")
 GITHUB_REPO = "SK-OTC/VC-bot"
 GITHUB_REF = "main"
+# Every saved transcript gets a private web link (https://<this worker>/t/<token>) that works for this many days.
+# 0 turns the automatic links off. /share-transcript can still make one by hand.
+SHARE_LINK_DAYS = "30"
+# Optional: the address to put in links if it differs from the one the recorder calls, e.g. your own domain.
+# PUBLIC_URL = "https://meetings.example.com"
 # DISCORD_PUBLIC_KEY is not secret, but keeping it in a secret avoids committing it:
 #   npx wrangler secret put DISCORD_PUBLIC_KEY
 #   npx wrangler secret put DISCORD_BOT_TOKEN

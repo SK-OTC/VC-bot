@@ -1,11 +1,13 @@
 // HTTP endpoints the GitHub recorder calls. All need `Authorization: Bearer <WORKER_SHARED_SECRET>`.
 //   GET  /api/sessions/<session id>/stop    -> { "stop": true | false }        (polled every 15 s while recording)
 //   POST /api/sessions/<session id>/finish  -> { "ok": true }                  (the job ended: { status: "done" | "failed", error? })
-//   POST /api/transcripts                   -> stores a finished transcript    (called once, at the end)
+//   POST /api/transcripts                   -> stores a finished transcript    (called once, at the end); the answer
+//                                              includes a one-time private web link: { ok, id, chunks, share_url?, share_expires_at? }
 // Nothing here ever logs transcript text, names or secrets.
 import { bearerMatches } from './secure.js';
 import { SESSION_ID_RE, endSession, getSession, readStopFlag, saveTranscript, transcriptIdExists } from './recording-store.js';
 import { validateTranscriptPayload } from './transcript-payload.js';
+import { configuredDays, createShareLink, linkUrl, publicOrigin } from './share-store.js';
 
 const MAX_BODY_CHARS = 1_000_000; // about 1 MB, as in the spec
 const HEADERS = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
@@ -32,7 +34,7 @@ export async function handleApi(request, env, url, nowSec) {
   try {
     if (stopMatch) return await stopFlag(env, stopMatch[1], nowSec);
     if (finishMatch) return await finishFromRecorder(request, env, finishMatch[1], nowSec);
-    return await storeTranscript(request, env, nowSec);
+    return await storeTranscript(request, env, url, nowSec);
   } catch (e) {
     // Never log the message: an exception message can contain anything, including request data. Only the
     // error type and, if present, a database error code such as SQLITE_CONSTRAINT or D1_ERROR.
@@ -67,7 +69,7 @@ async function finishFromRecorder(request, env, rawId, nowSec) {
   return respond({ ok: true });
 }
 
-async function storeTranscript(request, env, nowSec) {
+async function storeTranscript(request, env, url, nowSec) {
   const declared = Number(request.headers.get('Content-Length'));
   if (Number.isFinite(declared) && declared > MAX_BODY_CHARS * 2) return respond({ error: 'body too large' }, 413);
   const text = await request.text();
@@ -94,7 +96,22 @@ async function storeTranscript(request, env, nowSec) {
 
   try {
     const { chunks } = await saveTranscript(env.DB, t, nowSec);
-    return respond({ ok: true, id: t.id, chunks });
+    // Every stored transcript gets a private web link, returned once (only its hash is kept) so the recorder can post
+    // it in the team's private channel. SHARE_LINK_DAYS=0 turns this off. A failure here never loses the transcript.
+    const out = { ok: true, id: t.id, chunks };
+    const days = configuredDays(env);
+    if (days > 0) {
+      try {
+        const link = await createShareLink(env.DB, { transcriptId: t.id, createdBy: 'recorder', days }, nowSec);
+        if (link.ok) {
+          out.share_url = linkUrl(publicOrigin(env, url.origin), link.token);
+          out.share_expires_at = link.expiresAt;
+        }
+      } catch {
+        // the transcript is saved; /share-transcript can make a link later
+      }
+    }
+    return respond(out);
   } catch (e) {
     if (isUniqueViolation(e)) return respond({ error: 'id already exists' }, 409); // lost a race with another upload
     throw e;
