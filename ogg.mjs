@@ -84,12 +84,14 @@ export class OggOpusWriter {
     this.totalSamples = PRE_SKIP;
     this.packetCount = 0;
     this.closed = false;
+    this.bytes = 0; // file size so far, used to start a new file before Discord's attachment limit
     this.#write(buildPage({ headerType: 0x02, granule: 0, serial: this.serial, seq: this.seq++, packets: [opusHead()] }));
     this.#write(buildPage({ headerType: 0x00, granule: 0, serial: this.serial, seq: this.seq++, packets: [opusTags()] }));
   }
 
   #write(buf) {
     writeSync(this.fd, buf);
+    this.bytes += buf.length;
   }
 
   /** Adds one Opus packet (one 20 ms frame from Discord). */

@@ -1,19 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseConfig, verdict, logSummary, discordReport, silenceFramesNeeded } from '../lib.mjs';
-
-test('silenceFramesNeeded: no padding for normal 20 ms cadence or small jitter', () => {
-  assert.equal(silenceFramesNeeded(50, 1000 + 20, 0), 0); // 1 frame behind
-  assert.equal(silenceFramesNeeded(47, 1000, 0), 0); // exactly at tolerance edge (gap 3)
-});
-
-test('silenceFramesNeeded: a 2 s pause becomes ~100 silence frames', () => {
-  assert.equal(silenceFramesNeeded(50, 3000, 0), 99);
-});
-
-test('silenceFramesNeeded: never negative when packets arrive in a burst', () => {
-  assert.equal(silenceFramesNeeded(80, 1000, 0), 0);
-});
+import { parseConfig, verdict, logSummary, discordReport } from '../lib.mjs';
 
 const GOOD = { DISCORD_TOKEN: 'x', CHANNEL_ID: '123456789012345678' };
 

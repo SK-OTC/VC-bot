@@ -13,13 +13,13 @@ import {
 import { mkdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { parseConfig, verdict, logSummary, discordReport, silenceFramesNeeded, SILENCE_FRAME } from './lib.mjs';
-import { OggOpusWriter } from './ogg.mjs';
+import { parseConfig, verdict, logSummary, discordReport } from './lib.mjs';
+import { AlignedTrack, overlapSeconds } from './track.mjs';
 
 const log = (msg) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);
 const OUT_DIR = process.env.OUT_DIR || 'recordings';
-const MAX_ATTACHMENTS = 10;
-const MAX_ATTACHMENT_BYTES = 8_000_000;
+const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+const MAX_ATTACHMENT_BYTES = 9_900_000; // Discord's default upload limit is 10 MiB
 
 process.on('unhandledRejection', (e) => log(`unhandled rejection: ${e?.message ?? e}`));
 
@@ -78,46 +78,29 @@ async function main() {
 
   // ---- record -------------------------------------------------------------------------------
   const speakers = new Map(); // userId -> state
-  const openWriters = new Set();
   let stopping = false;
+  let recStartMs = Date.now();
 
-  let recordStart = Date.now();
-
-  // One subscription and ONE file per speaker for the whole run. Previously each pause > 1.5 s ended the
-  // stream, and a stream error killed it until Discord sent a fresh "speaking start". Anyone who kept
-  // talking (e.g. overlapping speech) was then silently dropped. Now we never end the stream ourselves
-  // and we resubscribe at once if it dies.
   function startStream(userId) {
     const sp = speakers.get(userId);
     if (stopping || sp.active) return;
     sp.active = true;
+    sp.streams++;
 
+    // Manual end: one stream for the whole run, resubscribed at once if it closes or errors. Before, a stream
+    // that died while the person kept talking stayed dead until Discord next said "speaking start", so
+    // overlapping speech was dropped.
     const stream = connection.receiver.subscribe(userId, { end: { behavior: EndBehaviorType.Manual } });
-    let ended = false;
+    sp.stream = stream;
     const finish = () => {
-      if (ended) return;
-      ended = true;
+      if (sp.stream !== stream) return;
+      sp.stream = null;
       sp.active = false;
-      if (!stopping) setTimeout(() => startStream(userId), 50); // resubscribe immediately
+      if (!stopping) setTimeout(() => startStream(userId), 0);
     };
     stream.on('data', (chunk) => {
       sp.packets++;
-      if (!sp.writer) {
-        sp.file = path.join(OUT_DIR, `${sp.label}.ogg`);
-        sp.writer = new OggOpusWriter(sp.file);
-        sp.parts = 1;
-        openWriters.add(sp.writer);
-        sp.files.push(sp.file);
-        sp.written = 0;
-        sp.trackStart = recordStart; // every track starts at the same instant, so they line up
-      }
-      // Fill gaps (silence, lost or undecryptable packets) with silence so timing stays correct.
-      const pad = silenceFramesNeeded(sp.written, Date.now(), sp.trackStart);
-      for (let i = 0; i < pad; i++) sp.writer.writePacket(SILENCE_FRAME);
-      sp.written += pad;
-      sp.silenceFrames += pad;
-      sp.writer.writePacket(chunk);
-      sp.written++;
+      sp.track.push(chunk, Date.now());
     });
     stream.on('error', (err) => {
       sp.errors++;
@@ -129,24 +112,22 @@ async function main() {
     stream.on('close', finish);
   }
 
+  let endMs = Date.now();
   if (readyMs != null) {
+    recStartMs = Date.now(); // all speakers' files are aligned to this moment
     connection.receiver.speaking.on('start', (userId) => {
       if (!speakers.has(userId)) {
+        const label = `speaker-${speakers.size + 1}`;
         speakers.set(userId, {
           userId,
-          label: `speaker-${speakers.size + 1}`,
+          label,
+          track: new AlignedTrack({ dir: OUT_DIR, label, startMs: recStartMs, maxSeconds: cfg.durationSec + 60 }),
           packets: 0,
           speakingEvents: 0,
           errors: 0,
           errorKinds: {},
-          parts: 0,
-          files: [],
+          streams: 0,
           active: false,
-          writer: null,
-          file: null,
-          written: 0,
-          silenceFrames: 0,
-          trackStart: 0,
         });
       }
       speakers.get(userId).speakingEvents++;
@@ -154,32 +135,34 @@ async function main() {
     });
 
     log(`recording for ${cfg.durationSec} s. Speak in the voice channel now.`);
-    const started = Date.now();
-    recordStart = started;
-    while (Date.now() - started < cfg.durationSec * 1000) {
-      await sleep(Math.min(15_000, cfg.durationSec * 1000 - (Date.now() - started)));
+    while (Date.now() - recStartMs < cfg.durationSec * 1000) {
+      await sleep(Math.min(15_000, cfg.durationSec * 1000 - (Date.now() - recStartMs)));
       const total = [...speakers.values()].reduce((n, s) => n + s.packets, 0);
-      log(`t=${Math.round((Date.now() - started) / 1000)} s: ${speakers.size} speaker(s), ${total} packets so far`);
+      log(`t=${Math.round((Date.now() - recStartMs) / 1000)} s: ${speakers.size} speaker(s), ${total} packets so far`);
     }
   }
 
   // ---- stop ---------------------------------------------------------------------------------
   stopping = true;
+  endMs = Date.now();
+  for (const s of speakers.values()) s.stream?.destroy();
   connection.destroy();
-  await sleep(1500);
-  for (const w of openWriters) w.close();
-  openWriters.clear();
+  await sleep(500);
+  const all = [...speakers.values()];
+  for (const sp of all) sp.track.finish(endMs); // pads every file to the same length
 
   const stats = {
     readyMs,
-    speakers: [...speakers.values()].map((s) => ({
+    overlapSec: overlapSeconds(all.map((sp) => sp.track)),
+    speakers: all.map((s) => ({
       label: s.label,
       packets: s.packets,
       speakingEvents: s.speakingEvents,
       errors: s.errors,
       errorKinds: s.errorKinds,
-      parts: s.parts,
-      files: s.files,
+      streams: s.streams,
+      fileCount: s.track.files.length,
+      files: s.track.files,
     })),
   };
   const v = verdict(stats, cfg.minPackets);
@@ -197,15 +180,21 @@ async function main() {
       }
       const target = await client.channels.fetch(cfg.postChannelId);
       if (!target?.isTextBased()) throw new Error('POST_CHANNEL_ID is not a text channel');
-      const files = stats.speakers
-        .flatMap((s) => s.files)
-        .map((f) => ({ f, size: statSync(f).size }))
-        .filter((x) => x.size > 1000 && x.size <= MAX_ATTACHMENT_BYTES)
-        .sort((a, b) => b.size - a.size)
-        .slice(0, MAX_ATTACHMENTS)
+      const all_files = stats.speakers.flatMap((s) => s.files).map((f) => ({ f, size: statSync(f).size }));
+      const tooBig = all_files.filter((x) => x.size > MAX_ATTACHMENT_BYTES);
+      const files = all_files
+        .filter((x) => x.size <= MAX_ATTACHMENT_BYTES)
         .map((x) => ({ attachment: x.f, name: path.basename(x.f) }));
-      await target.send({ content: discordReport(stats, v, names), files });
-      log(`posted the report and ${files.length} clip(s) to the test channel`);
+      let content = discordReport(stats, v, names);
+      if (tooBig.length) content += `\nNot attached (over the upload limit): ${tooBig.map((x) => path.basename(x.f)).join(', ')}. Saved on the machine that ran the test.`;
+      content = content.slice(0, 1990); // Discord rejects messages over 2,000 characters
+      const batches = [];
+      for (let i = 0; i < files.length; i += MAX_ATTACHMENTS_PER_MESSAGE) batches.push(files.slice(i, i + MAX_ATTACHMENTS_PER_MESSAGE));
+      if (batches.length === 0) batches.push([]);
+      for (let i = 0; i < batches.length; i++) {
+        await target.send({ content: i === 0 ? content : `(more clips, part ${i + 1} of ${batches.length})`, files: batches[i] });
+      }
+      log(`posted the report and ${files.length} file(s) to the test channel`);
     } catch (e) {
       log(`could not post to the test channel: ${e.message}`);
     }

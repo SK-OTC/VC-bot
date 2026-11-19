@@ -79,23 +79,6 @@ export function verdict(stats, minPackets = 100) {
   return { status: warnings.length ? 'WARN' : 'PASS', reasons, warnings };
 }
 
-/** An Opus "silence" frame (what Discord itself sends at the end of speech). */
-export const SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe]);
-const FRAME_MS = 20;
-const GAP_TOLERANCE_FRAMES = 3; // ignore network jitter up to 60 ms
-
-/**
- * How many silence frames to insert before the next real packet so the track stays on the wall clock.
- * Discord sends nothing while someone is quiet, and lost/undecryptable packets leave holes. If we just
- * append packets back to back, those holes disappear: audio comes out sped up, choppy and garbled, and
- * two speakers' tracks no longer line up. `written` counts frames already in the file (audio + silence).
- */
-export function silenceFramesNeeded(written, nowMs, trackStartMs) {
-  const target = Math.floor((nowMs - trackStartMs) / FRAME_MS);
-  const gap = target - written;
-  return gap > GAP_TOLERANCE_FRAMES ? gap - 1 : 0;
-}
-
 function secs(packets) {
   return (packets / 50).toFixed(1);
 }
@@ -109,8 +92,11 @@ export function logSummary(stats, v) {
     const kinds = Object.entries(s.errorKinds ?? {}).map(([k, n]) => `${k} x${n}`).join(', ');
     lines.push(
       `${s.label}: ${s.packets} packets (~${secs(s.packets)} s), spoke ${s.speakingEvents}x, ` +
-        `${s.errors} stream errors${kinds ? ` [${kinds}]` : ''}, ${s.parts} file part(s)`,
+        `${s.errors} stream errors${kinds ? ` [${kinds}]` : ''}, ${s.streams ?? 0} stream(s), ${s.fileCount ?? 0} file(s)`,
     );
+  }
+  if ((stats.speakers ?? []).length >= 2 && stats.overlapSec != null) {
+    lines.push(`overlap: two or more speakers were audible together for ${stats.overlapSec.toFixed(1)} s`);
   }
   for (const r of v.reasons) lines.push(`FAIL: ${r}`);
   for (const w of v.warnings) lines.push(`warning: ${w}`);
@@ -125,8 +111,11 @@ export function discordReport(stats, v, names = {}) {
     const who = names[s.label] ? `${s.label} (${names[s.label]})` : s.label;
     lines.push(`- ${who}: ${s.packets} packets, about ${secs(s.packets)} s of audio, ${s.errors} stream errors`);
   }
+  if ((stats.speakers ?? []).length >= 2 && stats.overlapSec != null) {
+    lines.push(`Overlap captured: ${stats.overlapSec.toFixed(1)} s where two or more people were heard at the same time`);
+  }
   for (const r of v.reasons) lines.push(`Failed: ${r}`);
   for (const w of v.warnings) lines.push(`Note: ${w}`);
-  lines.push('Listen to the attached clips to confirm they are clear and belong to the right person.');
+  lines.push('Every speaker has one file per ~9 MB, all starting at the same moment (speaker-1-001.ogg, speaker-2-001.ogg, ...). Play the same-numbered files together to hear the conversation in sync.');
   return lines.join('\n').slice(0, 1900);
 }

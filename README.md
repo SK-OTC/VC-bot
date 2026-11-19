@@ -1,13 +1,29 @@
-# Voice recording feasibility test
+# Voice recording, transcripts and summaries
 
-Answers one question for free: **can a bot join a Discord voice channel under Discord's
-end-to-end encryption (DAVE) and record one clear track per speaker, and can it do that from a
-GitHub Actions runner?**
+Two parts live in this folder:
 
-It does not transcribe anything. It joins, records for a fixed time, prints a PASS / WARN / FAIL
-summary (counts only), and posts the clips to a private channel so you can listen.
+1. **Feasibility test** (`record-test.mjs`): can a bot join a Discord voice channel under Discord's
+   end-to-end encryption (DAVE) and record one clear, time-aligned track per speaker, from your computer
+   and from a GitHub Actions runner? It does not transcribe anything.
+2. **Meeting recorder** (`record.mjs` and friends): the real thing. Records a meeting, transcribes it,
+   posts a transcript and a summary with action items to the team's private channel.
 
-## One-time setup (about 20 minutes)
+The Cloudflare Worker side (`/record`, `/transcript`, share pages, storage) is **not in this folder**.
+The plan for it is in the separate build instructions document (v2.1).
+
+## Part 1: feasibility test
+
+It joins, records for a fixed time, prints a PASS / WARN / FAIL summary (counts only), and posts the
+clips to a private channel so you can listen.
+
+Each speaker gets one file (`speaker-1-001.ogg`, `speaker-2-001.ogg`, ...). All files start at the
+same moment and keep real time, with silence where the person was quiet. Play the same-numbered
+files together and you hear the conversation in sync, overlaps included. Files roll over to a new
+number about every 9 MB so they fit Discord's upload limit. The summary also reports how many
+seconds two or more people were audible at the same time, so you can check that overlapping
+speech was captured.
+
+### One-time setup (about 20 minutes)
 
 1. **Test server.** Create a Discord server only for this. Add one voice channel and one private text channel.
 2. **Test bot.** Developer Portal > New Application > Bot > Reset Token (copy it somewhere safe).
@@ -17,7 +33,7 @@ summary (counts only), and posts the clips to a private channel so you can liste
    channel > Copy Channel ID.
 4. **Your computer.** Install Node.js 22 or newer.
 
-## Step 1: run it on your own computer first
+### Step 1: run it on your own computer first
 
 ```
 npm ci
@@ -30,23 +46,24 @@ While it says "recording", speak in the voice channel (join from the Discord app
 Why your computer first: if it works here but not on GitHub, the network is the problem.
 If it fails in both places, the encryption library is the problem.
 
-## Step 2: run the scenarios
+### Step 2: run the scenarios
 
 Run each one and note the result. Each is a separate run.
 
 | # | Scenario | How |
 |---|----------|-----|
 | A | Bot joins first, then you speak | Start the script, wait for "connected", then join the channel and talk |
-| B | You are already in the channel when the bot joins | Join the channel, then start the script |
+| B | You are already in the channel when the bot joins | Join the channel, then start the script. Repeat a few times |
 | C | Two speakers | Same as A, with a second person or account talking (take turns, then overlap) |
+| E | People joining and leaving | During a run, have someone join late, someone leave and rejoin, and a third person join. Every speaker's packet count should keep growing |
 | D | Long run | `DURATION_SEC=1200`, talk now and then, check nobody goes silent |
 
 Scenario B matters: an open discord.js bug reports that joining a channel where someone is
 already connected can leave the first packets undecryptable.
 
-## Step 3: run it on GitHub
+### Step 3: run it on GitHub
 
-1. Push this folder to a **new public repo**.
+1. The repo is `SK-OTC/VC-bot`. Keep it public (logs of a public repo are public, see below).
 2. Repo > Settings > Secrets and variables > Actions > New secret: `DISCORD_TOKEN`.
 3. Actions tab > "Voice recording test" > Run workflow. Fill in the two channel IDs.
 4. Join the voice channel and talk during the run.
@@ -54,7 +71,7 @@ already connected can leave the first packets undecryptable.
 Logs in a public repo are public. This test prints only counts and anonymous labels
 (`speaker-1`). Do not add logging of names, audio or tokens.
 
-## Reading the result
+### Reading the result
 
 * **PASS**: connected, every speaker produced audio, no unrecovered errors.
 * **WARN**: audio arrived but something was thin (very short speech, or errors that recovered).
@@ -63,8 +80,10 @@ Logs in a public repo are public. This test prints only counts and anonymous lab
   * "Detected speaking but no audio came through": the decryption problem, or the silent-speaker bug.
 
 Then open the clips in the private channel and listen. A PASS with garbled audio is a fail.
+For an overlap check, talk over each other for a while, then compare the reported overlap seconds
+with what you hear when you play both speakers' files together.
 
-## Settings
+### Settings
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -76,8 +95,121 @@ Then open the clips in the private channel and listen. A PASS with garbled audio
 | `MIN_PACKETS` | 100 | Packets (20 ms each) a speaker needs to count as a clear result |
 | `DEBUG_VOICE` | off | `1` prints connection debug lines. May include server addresses |
 
+## Part 2: recording, transcripts and summaries
+
+| File | What it does |
+| ---- | ------------ |
+| `record.mjs` | The production recorder. Joins, renames itself `[REC] ...`, posts a notice, records, stops by rule, then hands over to the steps below |
+| `track.mjs` | One time-aligned Ogg file per speaker (silence filled in), and the overlap measurement |
+| `ogg.mjs` | Minimal Ogg Opus writer |
+| `recorder/config.mjs` | Reads settings and the `TEAM_CONFIG` secret; refuses to run without a team entry for the channel |
+| `recorder/stop.mjs` | Stop rules (limit, empty channel, silence, stop flag), nickname, attachment batching |
+| `recorder/session.mjs` | After the meeting: transcribe, post transcript, summary, audio backup, upload to the Worker |
+| `pipeline/*` | Silence cutting, batching, Groq Whisper client with limits and retries, clean-up, merge, summary, upload |
+| `pipeline/local_whisper.py` | Backup transcriber (faster-whisper) |
+| `transcribe.mjs` | Command line: a folder of `speaker-N-001.ogg` files in, `transcript.txt` (and `summary.txt`) out |
+| `.github/workflows/record.yml` | The job the Worker starts (or you start by hand) |
+
+### Try the transcription on a recording you already have
+
+Put the `speaker-1-001.ogg`, `speaker-2-001.ogg` ... files in one folder. Optionally add `names.json`:
+`{ "speaker-1": "Farah", "speaker-2": "Sam" }`.
+
+```
+npm ci
+node transcribe.mjs path/to/folder --dry-run        # no key needed: shows how much speech and how many requests
+GROQ_API_KEY=... GLOSSARY="VibeCut, CapCut" node transcribe.mjs path/to/folder --summary
+```
+
+This needs ffmpeg (and ffprobe) installed on your computer. It writes `transcript.txt` (and `summary.txt`)
+into the folder. Do this first: it is the quality check, and the first real call confirms Groq's endpoint addresses.
+
+### Run the recorder on GitHub
+
+1. Repo secrets: `DISCORD_TOKEN`, `GROQ_API_KEY`, `TEAM_CONFIG`, and optionally `WORKER_URL` and `WORKER_SHARED_SECRET`.
+   `WORKER_URL` and `WORKER_SHARED_SECRET` can stay empty while testing: the transcript is still posted, and the
+   log says storage is not configured.
+2. `TEAM_CONFIG` is JSON, keyed by voice channel ID:
+
+   ```json
+   {
+     "<voice channel id>": {
+       "name": "Team A",
+       "transcriptChannelId": "<private text channel id>",
+       "backupChannelId": "<private audio backup channel id, optional>",
+       "glossary": "VibeCut, CapCut",
+       "language": "en"
+     }
+   }
+   ```
+
+3. Actions tab > "Record meeting" > Run workflow. Enter the voice channel ID. Join and talk.
+   End it with everyone leaving, silence, the time limit, or the stop flag from the Worker.
+
+The bot needs View Channel, Connect and Send Messages in the voice channel, Change Nickname in the server, and
+View Channel, Send Messages, Attach Files and Read Message History in the transcript and backup channels.
+It refuses to record if it can neither rename itself nor post the notice.
+
+### Other settings (environment variables)
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `MAX_MINUTES` | 150 | Longest meeting (5 to 240), counted from the first person |
+| `START_WAIT_MINUTES` | 15 | How long to wait for the first person |
+| `EMPTY_GRACE_MINUTES` | 3 | Stop this long after the last person leaves |
+| `SILENCE_STOP_MINUTES` | 20 | Stop after this long with nobody speaking |
+| `GROQ_MODEL` / `LLM_MODEL` | `whisper-large-v3` / `openai/gpt-oss-120b` | Speech and summary models |
+| `USE_LOCAL_FALLBACK` | on | `0` turns the backup transcriber off |
+| `GROQ_BASE_URL` | Groq's address | For tests against a fake server |
+| `LANGUAGE`, `GLOSSARY` | `en`, empty | Used by `transcribe.mjs` |
+
+Rate limits are in `pipeline/limiter.mjs` (`whisperLimiter`, `chatLimiter`). They are cautious defaults.
+Check them against your own Groq account's limits page.
+
 ## Tests
 
-`npm test` runs offline checks of the settings parser, the pass/fail rules and the Ogg file writer
-(the writer is checked by decoding its output with ffmpeg). They cannot prove Discord voice works.
-Only a real run can.
+`npm test` runs 40 offline tests: the settings parsers, pass/fail rules, the Ogg writer, the aligned tracks
+and overlap measurement, the speech-span and batch logic, transcript clean-up and merging, the rate limiter,
+the Groq retry rules (against a fake `fetch`), summary chunking and message splitting, and the stop rules.
+One test decodes the Ogg writer's output with ffmpeg and is skipped when ffmpeg is not installed.
+
+## What is and is not tested
+
+The tests prove logic only. They do **not** prove:
+
+* Groq's real endpoints, limits or Whisper's accuracy on your voices (the endpoint addresses are assumed from Groq's
+  OpenAI-compatible design).
+* Joining Discord voice in `record.mjs`: the notice, rename and stop loop have not run against Discord, and the
+  recorder's per-speaker streams have not been exercised in a real overlapping conversation.
+* The whole audio-to-transcript pipeline with real ffmpeg on real audio (`runPipeline`, `extract.mjs`).
+* `summarize` and `finishSession` against a real model, and `record.yml` itself (it has never run).
+* The backup transcriber (`faster-whisper`) install and speed on a GitHub runner, or a 2-hour run.
+
+Only a real run can show those.
+
+## Part 3: the Cloudflare Worker (one bot, one repo)
+
+This repo holds both halves of one Discord bot. **There is a single bot application**: the Worker uses its token to
+post messages and answer slash commands over HTTP, and the GitHub recorder logs in as the same bot to join voice.
+
+| Where | Files | Secrets |
+|-------|-------|---------|
+| Cloudflare Worker + D1 | `src/` (commands, scheduler, Google Calendar, recorder API), `migrations/`, `wrangler.toml`, `scripts/` | `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_TOKEN`, `WORKER_SHARED_SECRET` (and later `GITHUB_DISPATCH_TOKEN`, `GROQ_API_KEY`) |
+| GitHub Actions recorder | `record.mjs`, `recorder/`, `pipeline/`, `track.mjs`, `.github/workflows/record.yml` | `DISCORD_TOKEN` (the same bot's token), `GROQ_API_KEY`, `TEAM_CONFIG`, `WORKER_URL`, `WORKER_SHARED_SECRET` |
+
+`WORKER_SHARED_SECRET` is one long random string you make up. It goes in both places, and the recorder uses it to call
+the Worker's `GET /api/sessions/<id>/stop` and `POST /api/transcripts`. Set Worker secrets with
+`npx wrangler secret put NAME`, and GitHub secrets in the repo's Settings > Secrets and variables > Actions.
+Never commit `.dev.vars` (it is in `.gitignore`).
+
+The original reminder-bot documentation is in [docs/meeting-time-bot.md](docs/meeting-time-bot.md).
+
+```
+npm test                        # all offline tests (Worker + recorder)
+npm run db:migrate:local        # apply migrations to a local test database
+npm run deploy                  # publish the Worker (after db:migrate:remote and setting the secrets)
+npm run register                # (re)register the slash commands with Discord
+```
+
+One bot records one voice channel per server at a time, and while it records it renames itself `[REC] ...` in that
+server. Two teams meeting at the same moment in the same server would need a second bot application.

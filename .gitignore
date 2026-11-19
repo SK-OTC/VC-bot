@@ -1,3 +1,30 @@
 node_modules/
 .env
+.dev.vars
+.wrangler/
 recordings/
+*.log
+
+# secrets and local config (only the *.example files are committed)
+.env.*
+!.env.example
+.dev.vars.*
+!.dev.vars.example
+
+# database exports and dumps (contain real Discord user/server/channel IDs)
+backup.sql
+*.sql.bak
+!migrations/*.sql
+
+# recordings, transcripts and summaries: personal content
+recordings/
+*.ogg
+*.flac
+*.wav
+*.mp3
+transcript.txt
+summary.txt
+names.json
+
+# leftover copy of the Worker project (merged into the root); never commit it
+/meeting-time-bot/
