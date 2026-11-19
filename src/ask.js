@@ -1,4 +1,5 @@
-// Answering a question about ONE meeting from its stored transcript (retrieval + Groq).
+// Answering a question about ONE meeting from its stored transcript (hybrid retrieval + Groq).
+// Retrieval merges keyword search (BM25, here) with meaning-based search (src/semantic.js) by Reciprocal Rank Fusion.
 //
 // Safety rules for this file:
 //  * Only chunks of the transcript the link opens are ever read or sent to the model.
@@ -8,7 +9,7 @@
 //  * The Groq key is read from the Worker's secrets and never leaves it; error messages never contain the key or any body.
 
 export const MAX_QUESTION_CHARS = 500;
-const FULL_TRANSCRIPT_CHARS = 24_000; // up to this size the whole transcript is sent: more accurate than picking pieces
+export const FULL_TRANSCRIPT_CHARS = 24_000; // up to this size the whole transcript is sent: more accurate than picking pieces
 const CONTEXT_BUDGET_CHARS = 30_000; // for longer transcripts: the best-matching pieces, up to this much text
 const TOP_CHUNKS = 8;
 const HOUR = 3600;
@@ -94,13 +95,35 @@ export function ftsQuery(question) {
 
 // ---------- retrieval ----------
 
-/** The transcript pieces to show the model, as [{ seq, text }] in transcript order. Only this transcript's rows are read. */
-export async function selectContext(db, transcriptId, question) {
-  const total = await db
+/** How many chunks and characters a transcript has (0 and 0 for an unknown id). */
+export async function transcriptSize(db, transcriptId) {
+  const row = await db
     .prepare('SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(text)), 0) AS chars FROM transcript_chunks WHERE transcript_id = ?')
     .bind(transcriptId)
     .first();
-  if (!total?.n) return [];
+  return { n: row?.n ?? 0, chars: row?.chars ?? 0 };
+}
+
+/**
+ * Reciprocal Rank Fusion: merges several best-first lists of chunk numbers into one. A chunk that ranks well in more
+ * than one list (a keyword match that is also close in meaning) rises to the top. k=60 is the standard constant.
+ */
+export function rrf(lists, k = 60) {
+  const score = new Map();
+  for (const list of lists) {
+    list.forEach((seq, rank) => score.set(seq, (score.get(seq) ?? 0) + 1 / (k + rank + 1)));
+  }
+  // Ties keep the order the lists gave them (Map keeps insertion order and sort is stable).
+  return [...score.entries()].sort((a, b) => b[1] - a[1]).map(([seq]) => seq);
+}
+
+/**
+ * The transcript pieces to show the model, as [{ seq, text }] in transcript order. Only this transcript's rows are read.
+ * `semantic` is an optional best-first list of chunk numbers from the vector index; it is fused with the keyword hits.
+ */
+export async function selectContext(db, transcriptId, question, { semantic = [] } = {}) {
+  const total = await transcriptSize(db, transcriptId);
+  if (!total.n) return [];
   if (total.chars <= FULL_TRANSCRIPT_CHARS) {
     return (await db.prepare('SELECT seq, text FROM transcript_chunks WHERE transcript_id = ? ORDER BY seq').bind(transcriptId).all()).results;
   }
@@ -124,18 +147,23 @@ export async function selectContext(db, transcriptId, question) {
       hits = []; // a search problem must not stop the answer: fall back to the start and the end
     }
   }
+  // Keyword and meaning-based hits are merged, best first. Anything from the vector index is checked again here:
+  // only whole numbers that are real chunk numbers of THIS transcript are accepted.
+  const meaning = (Array.isArray(semantic) ? semantic : []).filter((s) => Number.isInteger(s) && s >= 0 && s < total.n);
+  const ranked = rrf([hits, meaning]).slice(0, TOP_CHUNKS);
+
   // Best matches first, each with its neighbours for context; the opening chunk (speaker list) always.
   const wanted = [];
   const add = (seq) => {
     if (seq >= 0 && seq < total.n && !wanted.includes(seq)) wanted.push(seq);
   };
   add(0);
-  for (const seq of hits) {
+  for (const seq of ranked) {
     add(seq);
     add(seq - 1);
     add(seq + 1);
   }
-  if (!hits.length) add(total.n - 1); // no matching words: the end often holds the wrap-up
+  if (!ranked.length) add(total.n - 1); // nothing matched at all: the end often holds the wrap-up
 
   const marks = wanted.map(() => '?').join(', '); // at most about 25 numbers, all integers we computed ourselves
   const rows = (

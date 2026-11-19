@@ -2,7 +2,9 @@ name: Record meeting
 
 # Started by the Cloudflare Worker (workflow_dispatch API call) or by hand: Actions tab > "Record meeting" > Run workflow.
 # Run pages and logs of a public repo are public. Inputs below are only IDs. Team names, channel mapping and the
-# glossary live in the TEAM_CONFIG secret. This job prints counts only and must never upload workflow artifacts.
+# glossary are made with /setup-recording in Discord and fetched from the Worker while the job runs (the TEAM_CONFIG
+# secret is only an optional fallback for runs started by hand). This job prints counts only and must never upload
+# workflow artifacts.
 on:
   workflow_dispatch:
     inputs:

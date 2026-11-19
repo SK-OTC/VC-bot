@@ -51,7 +51,7 @@ export function createTestDb() {
 }
 
 /** Fake Discord client that records posts and returns scripted results. */
-export function createFakeDiscord(script = [], { voice = {} } = {}) {
+export function createFakeDiscord(script = [], { voice = {}, channels = {} } = {}) {
   const posts = [];
   const followups = [];
   const edits = [];
@@ -72,6 +72,12 @@ export function createFakeDiscord(script = [], { voice = {} } = {}) {
     async editOriginal(appId, token, payload) {
       edits.push({ appId, token, ...payload });
       return next();
+    },
+    /** channels: { <channelId>: { type, guildId, name } }; a channel not listed is one the bot cannot see (HTTP 404). */
+    async getChannel(channelId) {
+      const c = channels[channelId];
+      if (!c) return { ok: false, status: 404, error: 'HTTP 404' };
+      return { ok: true, channel: { id: channelId, type: c.type, guildId: c.guildId ?? null, name: c.name ?? 'chan' } };
     },
     /** voice: { <userId>: <channelId> }; a user not listed is "in no voice channel"; a value of 'error' simulates a failed lookup. */
     async getVoiceChannelOf(guildId, userId) {

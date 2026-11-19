@@ -83,6 +83,49 @@ export async function endSession(db, id, status, error, nowSec) {
     .run();
 }
 
+// ---------- recording setups (/setup-recording) ----------
+
+export const MAX_SETUPS_PER_GUILD = 25;
+
+/** The setup for a voice channel, or null. Pass guildId to require that it belongs to that server. */
+export async function getRecordingSetup(db, voiceChannelId, guildId = null) {
+  const row = await db.prepare('SELECT * FROM recording_setups WHERE voice_channel_id = ?').bind(voiceChannelId).first();
+  if (!row || (guildId && row.guild_id !== guildId)) return null;
+  return row;
+}
+
+export async function listRecordingSetups(db, guildId) {
+  return (await db.prepare('SELECT * FROM recording_setups WHERE guild_id = ? ORDER BY name COLLATE NOCASE, voice_channel_id').bind(guildId).all()).results;
+}
+
+export async function countRecordingSetups(db, guildId) {
+  return (await db.prepare('SELECT COUNT(*) AS n FROM recording_setups WHERE guild_id = ?').bind(guildId).first())?.n ?? 0;
+}
+
+/**
+ * Creates or replaces the setup for a voice channel. A voice channel belongs to one server, so an existing row is only
+ * ever replaced by the same server: { ok: false } when another server already holds that channel id.
+ */
+export async function saveRecordingSetup(db, s, nowSec) {
+  const existing = await db.prepare('SELECT guild_id, created_by, created_at FROM recording_setups WHERE voice_channel_id = ?').bind(s.voiceChannelId).first();
+  if (existing && existing.guild_id !== s.guildId) return { ok: false };
+  await db
+    .prepare(
+      `INSERT INTO recording_setups (voice_channel_id, guild_id, name, transcript_channel_id, backup_channel_id, glossary, language, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (voice_channel_id) DO UPDATE SET name = excluded.name, transcript_channel_id = excluded.transcript_channel_id,
+         backup_channel_id = excluded.backup_channel_id, glossary = excluded.glossary, language = excluded.language, updated_at = excluded.updated_at`,
+    )
+    .bind(s.voiceChannelId, s.guildId, s.name, s.transcriptChannelId, s.backupChannelId ?? null, s.glossary ?? '', s.language ?? 'en', s.createdBy, existing?.created_at ?? nowSec, nowSec)
+    .run();
+  return { ok: true, updated: Boolean(existing) };
+}
+
+export async function deleteRecordingSetup(db, voiceChannelId, guildId) {
+  const r = await db.prepare('DELETE FROM recording_setups WHERE voice_channel_id = ? AND guild_id = ?').bind(voiceChannelId, guildId).run();
+  return (r.meta?.changes ?? 0) > 0;
+}
+
 export async function transcriptIdExists(db, id) {
   return (await db.prepare('SELECT 1 AS x FROM transcripts WHERE id = ?').bind(id).first()) !== null;
 }

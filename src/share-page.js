@@ -90,7 +90,7 @@ export function transcriptPage(t, qa = { enabled: false }) {
   const meta = [utc(t.started_at), hhmmss(t.duration_sec)];
   if (speakers.length) meta.push(speakers.map(esc).join(', '));
 
-  const parts = [`<h1>Meeting transcript</h1><p class="meta">${meta.join(' · ')}</p>`];
+  const parts = [`<h1>Meeting summary</h1><p class="meta">${meta.join(' · ')}</p>`];
   if (t.summary_text) parts.push(`<section><h2>Summary</h2><p class="text">${lite(t.summary_text)}</p></section>`);
   if (t.actions_text) parts.push(`<section><h2>Action items</h2><p class="text">${lite(t.actions_text)}</p></section>`);
   if (qa.enabled) {
@@ -105,5 +105,5 @@ export function transcriptPage(t, qa = { enabled: false }) {
     );
   }
   parts.push(`<p class="note">Private link. Anyone who has this address can read this page and ask questions about the meeting until ${esc(utcDay(t.expires_at))}. Please do not share it outside your team.</p>`);
-  return shell('Meeting transcript', parts.join(''));
+  return shell('Meeting summary', parts.join(''));
 }

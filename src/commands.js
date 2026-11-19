@@ -51,6 +51,7 @@ import { DEFAULT_DURATION_MIN, parseDuration, parseReminder } from './duration.j
 import { canManageOwner, fail, optionMap, reply } from './replies.js';
 import { cmdStartRecording, cmdStopRecording } from './recording-commands.js';
 import { cmdShareTranscript, cmdUnshareTranscript } from './share-commands.js';
+import { cmdRecordingSettings, cmdRemoveRecordingSetup, cmdSetupRecording } from './setup-commands.js';
 import { NOT_ENABLED, cmdCalendar, cmdGuests, followupFrom, newEventId, resolveTeam, suggestTeams } from './calendar-commands.js';
 
 const MIN_LEAD_SEC = 60; // a meeting must start at least a minute from now
@@ -774,6 +775,12 @@ export async function handleInteraction(interaction, { db, discord, bridge = nul
       return cmdStartRecording(ctx, o);
     case 'stop-recording':
       return cmdStopRecording(ctx, o);
+    case 'setup-recording':
+      return cmdSetupRecording(ctx, o);
+    case 'recording-settings':
+      return cmdRecordingSettings(ctx, o);
+    case 'remove-recording-setup':
+      return cmdRemoveRecordingSetup(ctx, o);
     case 'share-transcript':
       return cmdShareTranscript(ctx, o);
     case 'unshare-transcript':

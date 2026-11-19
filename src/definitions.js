@@ -4,6 +4,8 @@
 const T = { SUB_COMMAND: 1, STRING: 3, INTEGER: 4, BOOLEAN: 5, CHANNEL: 7, ROLE: 8 };
 const CHANNEL_TYPES = [0, 2, 5]; // text, voice (its text chat), announcement
 const VOICE_ONLY = [2];
+const TEXT_ONLY = [0, 5]; // text, announcement
+const MANAGE_SERVER = '32'; // Discord permission bit 1<<5, sent as a string
 
 const opt = (type, name, description, extra = {}) => ({ type, name, description, ...extra });
 
@@ -173,6 +175,36 @@ export const COMMANDS = [
       opt(T.SUB_COMMAND, 'disconnect', 'Disconnect your Google Calendar'),
       opt(T.SUB_COMMAND, 'status', 'Show whether your Google Calendar is connected'),
     ],
+  },
+  {
+    // Only people with Manage Server see these three by default (server admins can change that in Discord's settings);
+    // the handlers check the permission again, so hiding the command is a convenience, not the protection.
+    name: 'setup-recording',
+    description: 'Choose where a voice channel\'s transcript and summary are posted (admins only)',
+    contexts: [0],
+    default_member_permissions: MANAGE_SERVER,
+    options: [
+      opt(T.CHANNEL, 'voice_channel', 'The voice channel to record', { required: true, channel_types: VOICE_ONLY }),
+      opt(T.CHANNEL, 'transcript_channel', 'Private text channel for the transcript and summary', { required: true, channel_types: TEXT_ONLY }),
+      opt(T.STRING, 'name', 'Team or meeting name shown in the transcript heading (default: the voice channel name)', { max_length: 50 }),
+      opt(T.CHANNEL, 'backup_channel', 'Optional private text channel for the audio backup', { channel_types: TEXT_ONLY }),
+      opt(T.STRING, 'language', 'Spoken language, a 2-letter code such as en, es, fr (default: en)', { max_length: 3 }),
+      opt(T.STRING, 'glossary', 'Words to spell correctly, separated by commas, e.g. product names', { max_length: 500 }),
+    ],
+  },
+  {
+    name: 'recording-settings',
+    description: 'Show where each voice channel\'s transcript is posted (admins only)',
+    contexts: [0],
+    default_member_permissions: MANAGE_SERVER,
+    options: [opt(T.CHANNEL, 'voice_channel', 'Show just this voice channel (leave out to list all)', { channel_types: VOICE_ONLY })],
+  },
+  {
+    name: 'remove-recording-setup',
+    description: 'Stop allowing recordings of a voice channel (admins only)',
+    contexts: [0],
+    default_member_permissions: MANAGE_SERVER,
+    options: [opt(T.CHANNEL, 'voice_channel', 'The voice channel to remove', { required: true, channel_types: VOICE_ONLY })],
   },
   {
     name: 'start-recording',

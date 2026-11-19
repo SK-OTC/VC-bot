@@ -2,13 +2,13 @@
 // connection itself); stopping sets the flag the recorder checks every 15 seconds, so it leaves, then transcribes.
 import { MessageFlags, ResponseType } from './discord.js';
 import { canManageOwner, fail, reply } from './replies.js';
-import { createSession, endSession, failStaleSessions, findLiveSessions, requestStop } from './recording-store.js';
+import { createSession, endSession, failStaleSessions, findLiveSessions, getRecordingSetup, requestStop } from './recording-store.js';
 
 const SNOWFLAKE_RE = /^\d{17,20}$/;
 const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 export const RECORDING_NOT_ENABLED =
-  'Recording is not set up on this bot yet. The server admin needs to set the `GITHUB_DISPATCH_TOKEN` secret and `GITHUB_REPO` on the Worker (see the README).';
+  'Recording is not set up on this bot yet. The bot owner needs to set the `GITHUB_DISPATCH_TOKEN` secret and `GITHUB_REPO` on the Worker (see the README).';
 
 function newSessionId() {
   const bytes = crypto.getRandomValues(new Uint8Array(12));
@@ -31,6 +31,12 @@ export async function cmdStartRecording(ctx, o) {
     channelId = where.channelId;
   }
   if (!SNOWFLAKE_RE.test(channelId)) return fail('That does not look like a voice channel. Pick one with the `channel` option.');
+
+  // A voice channel can only be recorded after an admin has said where its transcript goes (/setup-recording). This also
+  // stops anyone starting a recording in a channel the team never agreed to record.
+  if (!(await getRecordingSetup(db, channelId, guildId))) {
+    return fail(`<#${channelId}> is not set up for recording yet. A server admin can set it up with \`/setup-recording\`.`);
+  }
 
   await failStaleSessions(db, guildId, nowSec);
   const id = newSessionId();

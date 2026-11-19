@@ -1,13 +1,15 @@
 // HTTP endpoints the GitHub recorder calls. All need `Authorization: Bearer <WORKER_SHARED_SECRET>`.
 //   GET  /api/sessions/<session id>/stop    -> { "stop": true | false }        (polled every 15 s while recording)
+//   GET  /api/sessions/<session id>/config  -> the /setup-recording settings for that session's voice channel (404 if none)
 //   POST /api/sessions/<session id>/finish  -> { "ok": true }                  (the job ended: { status: "done" | "failed", error? })
 //   POST /api/transcripts                   -> stores a finished transcript    (called once, at the end); the answer
 //                                              includes a one-time private web link: { ok, id, chunks, share_url?, share_expires_at? }
 // Nothing here ever logs transcript text, names or secrets.
 import { bearerMatches } from './secure.js';
-import { SESSION_ID_RE, endSession, getSession, readStopFlag, saveTranscript, transcriptIdExists } from './recording-store.js';
+import { SESSION_ID_RE, endSession, getRecordingSetup, getSession, readStopFlag, saveTranscript, transcriptIdExists } from './recording-store.js';
 import { validateTranscriptPayload } from './transcript-payload.js';
 import { configuredDays, createShareLink, linkUrl, publicOrigin } from './share-store.js';
+import { embedIfDue } from './semantic.js';
 
 const MAX_BODY_CHARS = 1_000_000; // about 1 MB, as in the spec
 const HEADERS = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
@@ -15,13 +17,14 @@ const respond = (obj, status = 200) => new Response(JSON.stringify(obj), { statu
 
 const isUniqueViolation = (e) => /UNIQUE constraint failed/i.test(String(e?.message ?? ''));
 
-export async function handleApi(request, env, url, nowSec) {
+export async function handleApi(request, env, url, nowSec, ctx = null) {
   const stopMatch = /^\/api\/sessions\/([^/]+)\/stop$/.exec(url.pathname);
   const finishMatch = /^\/api\/sessions\/([^/]+)\/finish$/.exec(url.pathname);
+  const configMatch = /^\/api\/sessions\/([^/]+)\/config$/.exec(url.pathname);
   const isTranscripts = url.pathname === '/api/transcripts';
-  if (!stopMatch && !finishMatch && !isTranscripts) return respond({ error: 'not found' }, 404);
+  if (!stopMatch && !finishMatch && !configMatch && !isTranscripts) return respond({ error: 'not found' }, 404);
 
-  const method = stopMatch ? 'GET' : 'POST';
+  const method = stopMatch || configMatch ? 'GET' : 'POST';
   if (request.method !== method) {
     return new Response('Method Not Allowed', { status: 405, headers: { Allow: method, 'Cache-Control': 'no-store' } });
   }
@@ -34,7 +37,8 @@ export async function handleApi(request, env, url, nowSec) {
   try {
     if (stopMatch) return await stopFlag(env, stopMatch[1], nowSec);
     if (finishMatch) return await finishFromRecorder(request, env, finishMatch[1], nowSec);
-    return await storeTranscript(request, env, url, nowSec);
+    if (configMatch) return await sessionConfig(env, configMatch[1]);
+    return await storeTranscript(request, env, url, nowSec, ctx);
   } catch (e) {
     // Never log the message: an exception message can contain anything, including request data. Only the
     // error type and, if present, a database error code such as SQLITE_CONSTRAINT or D1_ERROR.
@@ -48,6 +52,27 @@ async function stopFlag(env, rawId, nowSec) {
   // An unknown or malformed session answers "keep going": a stray id must never stop a real recording.
   if (!SESSION_ID_RE.test(rawId)) return respond({ stop: false });
   return respond({ stop: await readStopFlag(env.DB, rawId, nowSec) });
+}
+
+/**
+ * Where this recording's transcript goes, from /setup-recording. Only the session's own voice channel is ever returned,
+ * and only to a caller with the shared secret, so the channel mapping never has to appear in GitHub's public logs.
+ */
+async function sessionConfig(env, rawId) {
+  if (!SESSION_ID_RE.test(rawId)) return respond({ error: 'not found' }, 404);
+  const session = await getSession(env.DB, rawId);
+  if (!session) return respond({ error: 'not found' }, 404);
+  const setup = await getRecordingSetup(env.DB, session.voice_channel_id, session.guild_id);
+  if (!setup) return respond({ error: 'not found' }, 404);
+  return respond({
+    voice_channel_id: setup.voice_channel_id,
+    guild_id: setup.guild_id,
+    name: setup.name,
+    transcript_channel_id: setup.transcript_channel_id,
+    backup_channel_id: setup.backup_channel_id ?? null,
+    glossary: setup.glossary,
+    language: setup.language,
+  });
 }
 
 /**
@@ -69,7 +94,7 @@ async function finishFromRecorder(request, env, rawId, nowSec) {
   return respond({ ok: true });
 }
 
-async function storeTranscript(request, env, url, nowSec) {
+async function storeTranscript(request, env, url, nowSec, ctx) {
   const declared = Number(request.headers.get('Content-Length'));
   if (Number.isFinite(declared) && declared > MAX_BODY_CHARS * 2) return respond({ error: 'body too large' }, 413);
   const text = await request.text();
@@ -99,6 +124,9 @@ async function storeTranscript(request, env, url, nowSec) {
     // Every stored transcript gets a private web link, returned once (only its hash is kept) so the recorder can post
     // it in the team's private channel. SHARE_LINK_DAYS=0 turns this off. A failure here never loses the transcript.
     const out = { ok: true, id: t.id, chunks };
+    // Long transcripts are indexed for meaning-based search after the answer is sent, so the recorder is not kept waiting.
+    // If that fails, the first question about the meeting tries again (see src/semantic.js).
+    if (ctx?.waitUntil) ctx.waitUntil(embedIfDue(env, t.id, nowSec));
     const days = configuredDays(env);
     if (days > 0) {
       try {

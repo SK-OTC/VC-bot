@@ -131,5 +131,24 @@ export function createDiscordClient({ token, apiBase = 'https://discord.com/api/
     }
   }
 
-  return { postMessage, sendFollowup, editOriginal, getVoiceChannelOf };
+  /** Basic facts about a channel the bot can see: { ok: true, channel: { id, type, guildId, name } } or { ok: false, status?, error }. */
+  async function getChannel(channelId) {
+    let res;
+    try {
+      res = await doFetch(`${apiBase}/channels/${channelId}`, {
+        headers: { Authorization: `Bot ${token}`, 'User-Agent': 'DiscordBot (meeting-time-bot, 1.0.0)' },
+      });
+    } catch (e) {
+      return { ok: false, error: `network error: ${e?.message ?? e}` };
+    }
+    if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}` };
+    try {
+      const c = await res.json();
+      return { ok: true, channel: { id: String(c.id), type: c.type, guildId: c.guild_id ? String(c.guild_id) : null, name: String(c.name ?? '') } };
+    } catch {
+      return { ok: false, error: 'unreadable answer' };
+    }
+  }
+
+  return { postMessage, sendFollowup, editOriginal, getVoiceChannelOf, getChannel };
 }

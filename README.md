@@ -102,7 +102,7 @@ with what you hear when you play both speakers' files together.
 | `record.mjs` | The production recorder. Joins, renames itself `[REC] ...`, posts a notice, records, stops by rule, then hands over to the steps below |
 | `track.mjs` | One time-aligned Ogg file per speaker (silence filled in), and the overlap measurement |
 | `ogg.mjs` | Minimal Ogg Opus writer |
-| `recorder/config.mjs` | Reads settings and the `TEAM_CONFIG` secret; refuses to run without a team entry for the channel |
+| `recorder/config.mjs` | Reads settings; takes the channel settings from `/setup-recording` (via `recorder/remote-config.mjs`) or the optional `TEAM_CONFIG` secret; refuses to run without them |
 | `recorder/stop.mjs` | Stop rules (limit, empty channel, silence, stop flag), nickname, attachment batching |
 | `recorder/session.mjs` | After the meeting: transcribe, post transcript, summary, audio backup, upload to the Worker |
 | `pipeline/*` | Silence cutting, batching, Groq Whisper client with limits and retries, clean-up, merge, summary, upload |
@@ -126,10 +126,12 @@ into the folder. Do this first: it is the quality check, and the first real call
 
 ### Run the recorder on GitHub
 
-1. Repo secrets: `DISCORD_TOKEN`, `GROQ_API_KEY`, `TEAM_CONFIG`, and optionally `WORKER_URL` and `WORKER_SHARED_SECRET`.
-   `WORKER_URL` and `WORKER_SHARED_SECRET` can stay empty while testing: the transcript is still posted, and the
-   log says storage is not configured.
-2. `TEAM_CONFIG` is JSON, keyed by voice channel ID:
+1. Repo secrets: `DISCORD_TOKEN`, `GROQ_API_KEY`, `WORKER_URL` and `WORKER_SHARED_SECRET`. The last two are how the
+   job fetches the channel settings made with `/setup-recording`, polls the stop flag and stores the transcript.
+   (`TEAM_CONFIG` is no longer needed: see below.)
+2. **Tell the bot where each voice channel's transcript goes, in Discord, with `/setup-recording`** (see the next
+   section). The optional `TEAM_CONFIG` secret still works as a fallback for runs you start by hand without a session
+   (the settings from `/setup-recording` win when both exist). It is JSON, keyed by voice channel ID:
 
    ```json
    {
@@ -195,7 +197,7 @@ post messages and answer slash commands over HTTP, and the GitHub recorder logs 
 | Where | Files | Secrets |
 |-------|-------|---------|
 | Cloudflare Worker + D1 | `src/` (commands, scheduler, Google Calendar, recorder API), `migrations/`, `wrangler.toml`, `scripts/` | `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_TOKEN`, `WORKER_SHARED_SECRET`, `GITHUB_DISPATCH_TOKEN` |
-| GitHub Actions recorder | `record.mjs`, `recorder/`, `pipeline/`, `track.mjs`, `.github/workflows/record.yml` | `DISCORD_TOKEN` (the same bot's token), `GROQ_API_KEY`, `TEAM_CONFIG`, `WORKER_URL`, `WORKER_SHARED_SECRET` |
+| GitHub Actions recorder | `record.mjs`, `recorder/`, `pipeline/`, `track.mjs`, `.github/workflows/record.yml` | `DISCORD_TOKEN` (the same bot's token), `GROQ_API_KEY`, `WORKER_URL`, `WORKER_SHARED_SECRET` (`TEAM_CONFIG` is optional) |
 
 `WORKER_SHARED_SECRET` is one long random string you make up. It goes in both places, and the recorder uses it to call
 the Worker's `GET /api/sessions/<id>/stop` and `POST /api/transcripts`. Set Worker secrets with
@@ -209,8 +211,31 @@ Never commit `.dev.vars` (it is in `.gitignore`).
 | `/start-recording [channel]` | Records the voice channel you are in (or the one you pick). The Worker starts the GitHub job; the bot joins within about a minute |
 | `/stop-recording [channel] [force]` | The bot leaves within about 15 seconds, then transcribes and posts as usual. Only the person who started it, or someone with Manage Server, can stop it. `force:True` clears a stuck recording |
 
-Anyone in the server can start a recording. The voice channel must have an entry in the `TEAM_CONFIG` GitHub secret,
-otherwise the job stops straight away (the Worker cannot see that secret, so it cannot warn you up front).
+Anyone in the server can start a recording, but only in a voice channel an admin has set up (below). Otherwise
+`/start-recording` says so right away.
+
+### Setting up a server: `/setup-recording` (no GitHub secret to edit)
+
+| Command (needs Manage Server) | What it does |
+|---------|--------------|
+| `/setup-recording voice_channel transcript_channel [name] [backup_channel] [language] [glossary]` | Saves where that voice channel's transcript and summary go. Run it again to change it |
+| `/recording-settings [voice_channel]` | Shows the saved setups for this server |
+| `/remove-recording-setup voice_channel` | Stops allowing recordings of that voice channel |
+
+To add the bot to another server: invite the same bot, give it the permissions below, then run `/setup-recording` there.
+Nothing in GitHub changes. (Register the commands globally, with no `DISCORD_GUILD_ID`, so they show up in every server.)
+
+* **Checked when you save it.** The bot looks up each channel, makes sure they are all in this server and of the right
+  kind, and posts a confirmation message in the transcript channel (and backup channel). If it cannot see or post
+  there, nothing is saved and you are told which permissions are missing, so a mistake shows up now instead of in the
+  middle of a meeting.
+* **Admin only, twice.** The commands are hidden from people without Manage Server by default, and the handlers check
+  the permission again. A server's settings are never visible to, or editable from, another server.
+* **Private.** The recorder fetches its settings from the Worker with the shared secret, so channel IDs, team names and
+  glossaries never appear in the public GitHub run page or log.
+* Up to 25 setups per server. Languages are 2 or 3 letter codes (`en`, `es`, `fr`). The glossary (up to 500
+  characters) helps the transcriber spell names and product terms.
+* You can delete the `TEAM_CONFIG` secret from GitHub once every channel you record has a `/setup-recording`.
 
 One-time setup for `/start-recording`:
 
@@ -258,10 +283,37 @@ How it is protected:
 ### Asking questions about a meeting (Groq)
 
 A reader types a question; the Worker finds the relevant parts of **that one meeting's** stored transcript and asks
-Groq to answer from them only. Short meetings are sent whole; long ones use the database's full-text index to pick the
-best-matching parts (plus their neighbours and the opening, with the speaker list). Setup: `npx wrangler secret put
-GROQ_API_KEY` (the same kind of key the recorder uses, kept on the Worker only), then `npm run deploy` and apply the
-new migration with `npm run db:migrate:remote`. Without the key the page simply has no question box.
+Groq to answer from them only. Short meetings (under about 24,000 characters) are sent whole. Long ones use **hybrid
+retrieval**: keyword search (SQLite full-text, BM25) and meaning-based search (embeddings in Cloudflare Vectorize) each
+rank the transcript's chunks, the two rankings are merged with Reciprocal Rank Fusion, and the top matches are sent with
+their neighbouring chunks and the opening (speaker list). Meaning search finds "how much did we spend?" in a chunk that
+only says "the budget is forty thousand dollars"; keyword search keeps names, numbers and exact terms reliable.
+
+Setup:
+
+1. `npx wrangler secret put GROQ_API_KEY` (kept on the Worker only). Without it the page has no question box.
+2. For meaning-based search, create the vector index **before deploying** (the bindings in `wrangler.toml` need it):
+   `npx wrangler vectorize create vc-bot-chunks --dimensions=768 --metric=cosine`
+3. `npm run db:migrate:remote` (applies `0007` and `0008`), then `npm run deploy`.
+
+How the vector index is used:
+
+* Long transcripts are indexed in the background right after they are saved (Workers AI model
+  `@cf/baai/bge-base-en-v1.5`, 768 dimensions, English). Transcripts saved before this feature, or whose indexing failed,
+  are indexed by the first question asked about them, and that question is answered with keyword search alone. Failed
+  indexing is retried at most every 10 minutes.
+* **One Vectorize namespace per transcript**, and every query names it, so a question can only match its own meeting.
+  Ids returned by the index are checked again before use.
+* **Only vectors are stored in Vectorize**: no text, no names, no metadata (ids look like `abc234:17`).
+* **It is a pure upgrade.** If the AI or Vectorize binding is missing, slow or failing, questions are answered with
+  keyword search alone and nothing breaks. Failures are logged by type only.
+* A non-English team needs a multilingual embedding model: set `EMBEDDING_MODEL` and recreate the index with that
+  model's dimensions (the model and the index size must match, and existing vectors must be rebuilt).
+* The question and the transcript chunks are sent to Cloudflare Workers AI to be embedded (in addition to Groq
+  receiving the parts used for the answer). To remove a transcript's vectors, call `deleteEmbeddings` in
+  `src/semantic.js`; deleting a transcript row does not remove them by itself.
+* Local `wrangler dev` cannot reach these services without a Cloudflare login (they always run remotely); the
+  offline tests use fakes.
 
 * **Only this meeting.** Retrieval is limited to the transcript the link opens, so one link can never reveal another meeting.
 * **Words from the meeting are data, not instructions.** They are passed to the model as quoted material, the model has

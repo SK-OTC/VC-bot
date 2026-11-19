@@ -8,6 +8,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseSessionConfig } from './recorder/config.mjs';
 import { reportFinish } from './recorder/report.mjs';
+import { fetchRemoteTeam } from './recorder/remote-config.mjs';
 import { shouldStop, trackEmpty, recordingNickname, batchAttachments } from './recorder/stop.mjs';
 import { finishSession } from './recorder/session.mjs';
 import { AlignedTrack } from './track.mjs';
@@ -49,7 +50,9 @@ async function pollStopFlag(cfg) {
 }
 
 async function main() {
-  const cfg = parseSessionConfig(process.env);
+  const remote = await fetchRemoteTeam(process.env);
+  const cfg = parseSessionConfig(process.env, remote.found ? remote.team : null);
+  log(remote.found ? 'recording settings: from /setup-recording' : `recording settings: from TEAM_CONFIG (${remote.reason})`);
   mkdirSync(OUT_DIR, { recursive: true });
   log(`node ${process.version}; team config found; limit ${cfg.maxMinutes} min`);
 

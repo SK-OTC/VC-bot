@@ -147,7 +147,7 @@ test('a valid link shows summary, action items, speakers and the length, but NOT
   const res = await t.get(new URL(share_url).pathname);
   assert.equal(res.status, 200);
   const html = await res.text();
-  for (const s of ['Meeting transcript', '<strong>Summary</strong>', 'shoes launch', 'buy shoes', 'Farah, Sam', '01:02:05', '2026-11-19 10:00 UTC']) {
+  for (const s of ['Meeting summary', '<strong>Summary</strong>', 'shoes launch', 'buy shoes', 'Farah, Sam', '01:02:05', '2026-11-19 10:00 UTC']) {
     assert.ok(html.includes(s), `missing: ${s}`);
   }
   for (const s of ['hello everyone', 'shoes are the topic today', '[00:00:05]']) assert.ok(!html.includes(s), `the transcript must not be on the page: ${s}`);
@@ -248,8 +248,8 @@ test('HTML injection: names, speech and model output are escaped, and nothing ca
 test('a transcript with no summary or speakers still renders; corrupt speaker JSON does not crash it', () => {
   const base = { started_at: NOW, duration_sec: 60, expires_at: NOW + DAY };
   const a = transcriptPage({ ...base, speakers: '[]', summary_text: null, actions_text: null });
-  assert.ok(a.includes('Meeting transcript') && !a.includes('Summary'));
-  assert.ok(transcriptPage({ ...base, speakers: 'not json{', summary_text: null, actions_text: null }).includes('Meeting transcript'));
+  assert.ok(a.includes('Meeting summary') && !a.includes('Summary'));
+  assert.ok(transcriptPage({ ...base, speakers: 'not json{', summary_text: null, actions_text: null }).includes('Meeting summary'));
 });
 
 test('a database error shows the same plain page and logs no token or text', async () => {

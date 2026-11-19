@@ -5,6 +5,7 @@
 //   /robots.txt     tells well-behaved crawlers to stay away from everything
 import { handleApi } from './api.js';
 import { MAX_QUESTION_CHARS, askGroq, buildMessages, cleanQuestion, joinContext, questionLimits, questionsEnabled, selectContext, takeQuestionSlot } from './ask.js';
+import { embedIfDue, semanticHits } from './semantic.js';
 import { SECURITY_HEADERS, notFoundPage, transcriptPage } from './share-page.js';
 import { TOKEN_RE, findSharedTranscript, recordView } from './share-store.js';
 
@@ -40,7 +41,7 @@ async function handleShare(request, env, ctx, url, nowSec) {
     const enabled = questionsEnabled(env);
     const view = (qa = {}) => transcriptPage(t, { enabled, maxChars: MAX_QUESTION_CHARS, ...qa });
 
-    if (method === 'POST') return await handleQuestion(request, env, url, nowSec, t, enabled, view);
+    if (method === 'POST') return await handleQuestion(request, env, ctx, url, nowSec, t, enabled, view);
 
     if (method === 'GET') {
       const count = recordView(env.DB, t.token_hash, nowSec);
@@ -55,7 +56,7 @@ async function handleShare(request, env, ctx, url, nowSec) {
   }
 }
 
-async function handleQuestion(request, env, url, nowSec, t, enabled, view) {
+async function handleQuestion(request, env, ctx, url, nowSec, t, enabled, view) {
   // Cross-site posts are refused: a page on another site must not be able to make a reader's browser ask questions.
   const origin = request.headers.get('Origin');
   if ((origin && origin !== url.origin) || request.headers.get('Sec-Fetch-Site') === 'cross-site') return plain(403, 'Forbidden');
@@ -74,7 +75,12 @@ async function handleQuestion(request, env, url, nowSec, t, enabled, view) {
     return page(view({ question: asked.question, error: slot.scope === 'total' ? MESSAGES.busyTotal : MESSAGES.busyLink }), 429, { 'Retry-After': String(slot.retryAfterSec) });
   }
 
-  const pieces = await selectContext(env.DB, t.id, asked.question);
+  // Hybrid retrieval: keyword search always; meaning-based search too when this transcript is in the vector index.
+  // A transcript that is not indexed yet is answered with keywords alone this time and indexed in the background.
+  let semantic = [];
+  if (t.embedded_at) semantic = await semanticHits(env, t.id, asked.question);
+  else if (ctx?.waitUntil) ctx.waitUntil(embedIfDue(env, t.id, nowSec));
+  const pieces = await selectContext(env.DB, t.id, asked.question, { semantic });
   if (!pieces.length) return page(view({ question: asked.question, error: MESSAGES.nothing }), 404);
   const result = await askGroq(env, buildMessages({ summary: t.summary_text, actions: t.actions_text, excerpts: joinContext(pieces), question: asked.question }));
   if (!result.ok) {
@@ -86,7 +92,7 @@ async function handleQuestion(request, env, url, nowSec, t, enabled, view) {
 
 export async function handleHttp(request, env, ctx, nowSec) {
   const url = new URL(request.url);
-  if (url.pathname.startsWith('/api/')) return handleApi(request, env, url, nowSec);
+  if (url.pathname.startsWith('/api/')) return handleApi(request, env, url, nowSec, ctx);
   if (url.pathname === '/robots.txt' && (request.method === 'GET' || request.method === 'HEAD')) {
     return new Response('User-agent: *\nDisallow: /\n', { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' } });
   }
