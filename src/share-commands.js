@@ -37,7 +37,7 @@ export async function cmdShareTranscript(ctx, o) {
   const url = linkUrl(publicOrigin(env, origin), link.token);
   return reply(
     `Private link for transcript \`${t.id}\` (valid until <t:${link.expiresAt}:D>):\n<${url}>\n` +
-      'Anyone who has this address can read the transcript and summary, so only share it with people who should see the meeting. ' +
+      'Anyone who has this address can read the summary and ask questions about the meeting, so only share it with people who should see it. ' +
       'Turn every link for this transcript off with `/unshare-transcript`.',
     { ephemeral: true },
   );

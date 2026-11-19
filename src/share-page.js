@@ -1,7 +1,8 @@
 // The read-only web page behind a share link, and the strict headers every response from /t/ carries.
 // Security rules for this file:
 //  * Every piece of text that came from speech, a Discord name or a language model is HTML-escaped first.
-//  * The page has no scripts, no images, no forms and no links, so there is nothing to inject into or click through.
+//  * The page has no scripts, no images and no links. Its only form posts back to the same address (CSP form-action 'self').
+//  * The transcript itself is never put on the page: readers get the summary and can ask questions about the meeting.
 //  * Pages are never cached, never indexed, and never send a Referer header on.
 
 export const SECURITY_HEADERS = {
@@ -11,7 +12,7 @@ export const SECURITY_HEADERS = {
   'Referrer-Policy': 'no-referrer',
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
-  'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Resource-Policy': 'same-origin',
@@ -50,8 +51,13 @@ h2{font-size:1.05rem;margin:0 0 .6rem;color:var(--accent)}
 .meta{color:var(--muted);font-size:.92rem;margin:0 0 1.2rem}
 section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem 1.1rem;margin:0 0 1rem}
 .text{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
-.transcript{font:.9rem/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .note{color:var(--muted);font-size:.85rem;margin-top:1.5rem}
+label{display:block;font-weight:600;margin:0 0 .4rem}
+textarea{width:100%;min-height:5rem;padding:.6rem .7rem;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:8px;resize:vertical}
+button{margin-top:.6rem;padding:.55rem 1.1rem;font:inherit;font-weight:600;color:#fff;background:var(--accent);border:0;border-radius:8px;cursor:pointer}
+.q{color:var(--muted);margin:0 0 .6rem}
+.err{color:#c92a2a}
+@media (prefers-color-scheme:dark){.err{color:#ff8787}button{color:#111}}
 `;
 
 function shell(title, bodyHtml) {
@@ -68,7 +74,11 @@ export function notFoundPage() {
   return shell('Link not available', '<h1>This link is not available</h1><p class="meta">It may have expired or been turned off. Ask the person who shared it for a new one.</p>');
 }
 
-export function transcriptPage(t) {
+/**
+ * qa: { enabled, maxChars, question?, answer?, error? }. `question` is shown back to the reader (escaped), `answer`
+ * comes from the model (escaped, only **bold** is rendered), `error` is one of our own fixed messages.
+ */
+export function transcriptPage(t, qa = { enabled: false }) {
   let speakers = [];
   try {
     const parsed = JSON.parse(t.speakers ?? '[]');
@@ -83,7 +93,17 @@ export function transcriptPage(t) {
   const parts = [`<h1>Meeting transcript</h1><p class="meta">${meta.join(' · ')}</p>`];
   if (t.summary_text) parts.push(`<section><h2>Summary</h2><p class="text">${lite(t.summary_text)}</p></section>`);
   if (t.actions_text) parts.push(`<section><h2>Action items</h2><p class="text">${lite(t.actions_text)}</p></section>`);
-  parts.push(`<section><h2>Transcript</h2><p class="text transcript">${esc(t.transcript_text)}</p></section>`);
-  parts.push(`<p class="note">Private link. Anyone who has this address can read this page until ${esc(utcDay(t.expires_at))}. Please do not share it outside your team.</p>`);
+  if (qa.enabled) {
+    let result = '';
+    if (qa.error) result += `<p class="err">${esc(qa.error)}</p>`;
+    if (qa.answer) result += `<p class="q">You asked: ${esc(qa.question)}</p><p class="text">${lite(qa.answer)}</p><p class="note">Answers are written by an AI model from this meeting's transcript and can be wrong. Check anything important with the people who were there.</p>`;
+    parts.push(
+      '<section><h2>Ask about this meeting</h2>' +
+        '<form method="post" autocomplete="off"><label for="q">Your question</label>' +
+        `<textarea id="q" name="q" maxlength="${Number(qa.maxChars) || 500}" required>${esc(qa.error ? qa.question ?? '' : '')}</textarea>` +
+        `<button type="submit">Ask</button></form>${result}</section>`,
+    );
+  }
+  parts.push(`<p class="note">Private link. Anyone who has this address can read this page and ask questions about the meeting until ${esc(utcDay(t.expires_at))}. Please do not share it outside your team.</p>`);
   return shell('Meeting transcript', parts.join(''));
 }

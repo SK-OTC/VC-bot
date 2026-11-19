@@ -16,5 +16,8 @@ DISCORD_APPLICATION_ID=your_application_id
 # with "Actions: Read and write". GITHUB_REPO and GITHUB_REF are set in wrangler.toml.
 # GITHUB_DISPATCH_TOKEN=github_pat_...
 
+# "Ask about this meeting" on the transcript page. In production: npx wrangler secret put GROQ_API_KEY
+# GROQ_API_KEY=gsk_...
+
 # Google Calendar sync (optional). The same value goes in every meeting organizer's Apps Script property BOT_SECRET.
 # BRIDGE_SECRET=long_random_string

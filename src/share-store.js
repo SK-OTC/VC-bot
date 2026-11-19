@@ -74,7 +74,7 @@ export async function createShareLink(db, { transcriptId, createdBy, days }, now
   return { ok: true, token, expiresAt };
 }
 
-/** The transcript a live (not expired, not revoked) token opens, with its text, or null. Same answer for every kind of "no". */
+/** The transcript a live (not expired, not revoked) token opens (summary, not full text), or null. Same answer for every kind of "no". */
 export async function findSharedTranscript(db, token, nowSec) {
   if (!TOKEN_RE.test(String(token))) return null;
   const hash = await hashToken(token);
@@ -86,9 +86,7 @@ export async function findSharedTranscript(db, token, nowSec) {
     )
     .bind(hash, nowSec)
     .first();
-  if (!row) return null;
-  const chunks = (await db.prepare('SELECT text FROM transcript_chunks WHERE transcript_id = ? ORDER BY seq').bind(row.id).all()).results;
-  return { ...row, transcript_text: chunks.map((c) => c.text).join('\n') };
+  return row ?? null; // the transcript text itself is deliberately not loaded: the page only shows the summary
 }
 
 /** Counts a view. Best effort: a failure here must never stop the page loading. */

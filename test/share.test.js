@@ -141,15 +141,17 @@ test('a failure while making the link never loses the transcript', async () => {
 
 // ---------- the page ----------
 
-test('a valid link shows summary, action items, transcript, speakers and the length', async () => {
+test('a valid link shows summary, action items, speakers and the length, but NOT the transcript', async () => {
   const t = setup();
   const { share_url } = await stored(t);
   const res = await t.get(new URL(share_url).pathname);
   assert.equal(res.status, 200);
   const html = await res.text();
-  for (const s of ['Meeting transcript', 'hello everyone', 'shoes are the topic today', '<strong>Summary</strong>', 'shoes launch', 'buy shoes', 'Farah, Sam', '01:02:05', '2026-11-19 10:00 UTC']) {
+  for (const s of ['Meeting transcript', '<strong>Summary</strong>', 'shoes launch', 'buy shoes', 'Farah, Sam', '01:02:05', '2026-11-19 10:00 UTC']) {
     assert.ok(html.includes(s), `missing: ${s}`);
   }
+  for (const s of ['hello everyone', 'shoes are the topic today', '[00:00:05]']) assert.ok(!html.includes(s), `the transcript must not be on the page: ${s}`);
+  assert.ok(!/<form|<textarea/i.test(html), 'no question box when GROQ_API_KEY is not set');
 });
 
 test('every page response carries the strict security headers', async () => {
@@ -181,6 +183,7 @@ test('wrong, unknown, expired, revoked and malformed links all give the identica
   assert.equal(unknown.status, 404);
   const reference = await unknown.text();
   assert.ok(!reference.includes('hello everyone'));
+  assert.equal((await t.get(`/t/${newToken()}`, { method: 'POST' })).status, 404); // a POST to a wrong link is the same "no"
 
   const expired = await t.get(goodPath, { now: NOW + 31 * DAY });
   const malformed = [`/t/${token.slice(0, 42)}`, `/t/${token}x`, `/t/${token}/`, `/t/${token}/extra`, '/t/', `/t/${'!'.repeat(43)}`, `/t/%00`, `/t/${token.toLowerCase()}`];
@@ -198,11 +201,11 @@ test('wrong, unknown, expired, revoked and malformed links all give the identica
   assert.equal(await revoked.text(), reference);
 });
 
-test('only GET and HEAD are allowed; HEAD works and does not count as a view', async () => {
+test('only GET, HEAD and POST are allowed; HEAD works and does not count as a view', async () => {
   const t = setup();
   const { share_url } = await stored(t);
   const path = new URL(share_url).pathname;
-  for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) assert.equal((await t.get(path, { method })).status, 405);
+  for (const method of ['PUT', 'DELETE', 'PATCH', 'OPTIONS']) assert.equal((await t.get(path, { method })).status, 405);
   assert.equal((await t.get(path, { method: 'HEAD' })).status, 200);
   assert.equal(t.db.sql('SELECT views FROM share_links')[0].views, 0);
   await t.get(path);
@@ -229,6 +232,7 @@ test('HTML injection: names, speech and model output are escaped, and nothing ca
     actions_text: `- ${evil}`,
   });
   const html = await (await t.get(new URL(share_url).pathname)).text();
+  assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), 'names and summary still show, escaped');
   assert.ok(!html.includes('<script>alert'), 'raw <script> must never appear');
   assert.ok(!html.includes('<img'), 'raw <img> must never appear');
   assert.ok(!/<[a-z]+[^>]*\sonerror=/i.test(html), 'no tag may carry an event handler');
@@ -242,10 +246,10 @@ test('HTML injection: names, speech and model output are escaped, and nothing ca
 });
 
 test('a transcript with no summary or speakers still renders; corrupt speaker JSON does not crash it', () => {
-  const base = { started_at: NOW, duration_sec: 60, transcript_text: 'just text', expires_at: NOW + DAY };
+  const base = { started_at: NOW, duration_sec: 60, expires_at: NOW + DAY };
   const a = transcriptPage({ ...base, speakers: '[]', summary_text: null, actions_text: null });
-  assert.ok(a.includes('just text') && !a.includes('Summary'));
-  assert.ok(transcriptPage({ ...base, speakers: 'not json{', summary_text: null, actions_text: null }).includes('just text'));
+  assert.ok(a.includes('Meeting transcript') && !a.includes('Summary'));
+  assert.ok(transcriptPage({ ...base, speakers: 'not json{', summary_text: null, actions_text: null }).includes('Meeting transcript'));
 });
 
 test('a database error shows the same plain page and logs no token or text', async () => {
@@ -301,8 +305,8 @@ test('deleting a transcript deletes its links', async () => {
 
 test('a link opens only its own transcript', async () => {
   const t = setup();
-  const a = await stored(t, { id: 'aaaaaa', transcript_text: 'ALPHA-MEETING-TEXT' });
-  const b = await stored(t, { id: 'bbbbbb', transcript_text: 'BRAVO-MEETING-TEXT' });
+  const a = await stored(t, { id: 'aaaaaa', summary_text: 'ALPHA-MEETING-TEXT' });
+  const b = await stored(t, { id: 'bbbbbb', summary_text: 'BRAVO-MEETING-TEXT' });
   const pa = await (await t.get(new URL(a.share_url).pathname)).text();
   const pb = await (await t.get(new URL(b.share_url).pathname)).text();
   assert.ok(pa.includes('ALPHA') && !pa.includes('BRAVO'));

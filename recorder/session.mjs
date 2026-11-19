@@ -99,7 +99,7 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
         const until = stored.shareExpiresAt ? ` until <t:${stored.shareExpiresAt}:D>` : '';
         try {
           await io.postText(
-            `🔗 **Read it online:** <${stored.shareUrl}>\nAnyone who has this link can read the transcript and summary${until}. Turn it off any time with \`/unshare-transcript\`.`,
+            `🔗 **Summary and Q&A online:** <${stored.shareUrl}>\nAnyone who has this link can read the summary and ask questions about the meeting${until}. Turn it off any time with \`/unshare-transcript\`.`,
             { replyTo: posted.messageId },
           );
         } catch {

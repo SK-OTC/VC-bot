@@ -225,8 +225,10 @@ are cleared automatically after 20 minutes (never started) or 6 hours (running).
 
 ### Private web links for transcripts
 
-Every saved transcript gets a private page at `https://<your worker>/t/<token>` showing the summary, action items and
-full transcript. The recorder posts the link in the team's private channel under the transcript. It is made when the
+Every saved transcript gets a private page at `https://<your worker>/t/<token>` showing the summary and action items,
+plus a box to **ask questions about the meeting**. The full transcript is **not** shown on the page (it stays in the
+database, and in Discord as the file the bot posted). The recorder posts the link in the team's private channel under
+the transcript. It is made when the
 transcript is stored, so it needs `WORKER_URL` and `WORKER_SHARED_SECRET` to be set on GitHub.
 
 | Command (run it in the transcript's private channel) | What it does |
@@ -244,13 +246,35 @@ How it is protected:
 * **Same "not available" page** for a wrong, expired, revoked or malformed link, so nobody can probe for real ones.
 * **Expires and can be revoked.** Links stop at their expiry time; `/unshare-transcript` stops them at once.
   At most 10 live links per transcript. Deleting a transcript deletes its links.
-* **Read-only page with no scripts, images, forms or links.** Everything from speech, speaker names and the summary is
-  HTML-escaped. A strict Content-Security-Policy, `X-Frame-Options: DENY` and `nosniff` are sent on every response.
+* **The page has no scripts, images or links, and its one form posts only back to itself.** Everything from speech,
+  speaker names, the summary and the model's answers is HTML-escaped. A strict Content-Security-Policy,
+  `X-Frame-Options: DENY` and `nosniff` are sent on every response.
 * **Not indexed or cached.** `noindex` headers and meta tag, `robots.txt` disallowing everything, `Cache-Control: no-store`,
   and `Referrer-Policy: no-referrer` so the address is not passed on to other sites.
 * **Not logged.** Neither the Worker nor the recorder ever prints a link, and the recorder posts it only to the private channel.
 * **Only the right people can make links.** The commands work only in the channel the transcript was posted to, so only
   people who can use that channel can create or revoke its links.
+
+### Asking questions about a meeting (Groq)
+
+A reader types a question; the Worker finds the relevant parts of **that one meeting's** stored transcript and asks
+Groq to answer from them only. Short meetings are sent whole; long ones use the database's full-text index to pick the
+best-matching parts (plus their neighbours and the opening, with the speaker list). Setup: `npx wrangler secret put
+GROQ_API_KEY` (the same kind of key the recorder uses, kept on the Worker only), then `npm run deploy` and apply the
+new migration with `npm run db:migrate:remote`. Without the key the page simply has no question box.
+
+* **Only this meeting.** Retrieval is limited to the transcript the link opens, so one link can never reveal another meeting.
+* **Words from the meeting are data, not instructions.** They are passed to the model as quoted material, the model has
+  no tools, and its answer is shown as escaped text, so something said aloud like "ignore your rules" cannot change
+  the rules, run code or add a link or script to the page. The worst case is a wrong answer, which is why every answer
+  says it can be wrong.
+* **Your Groq quota is protected.** Defaults: 15 questions per link per hour, 60 per link per day and 300 per day in
+  total (`QA_HOURLY_PER_LINK`, `QA_DAILY_PER_LINK`, `QA_DAILY_TOTAL` in `wrangler.toml`; total `0` switches questions
+  off). Failed attempts count too. Questions are limited to 500 characters.
+* **Questions and answers are not stored or logged.** The database keeps only a count and a time per question.
+* **Forms from other websites are refused** (the `Origin` is checked), and expired or revoked links cannot ask anything.
+* **Privacy:** the question, the summary and the parts of the transcript used for an answer are sent to Groq, the same
+  provider that already transcribes the audio.
 
 What a link does not protect against: anyone who is given the address can read the page until it expires or is
 turned off (there is no login), and Cloudflare's own request logs for your account include the address. Treat links
