@@ -1,0 +1,85 @@
+name: Spike - Parakeet speed on the runner
+
+# Step 1 of the Parakeet plan: measure install time, model download, speed, peak memory and timestamps on a real
+# 4-vCPU GitHub runner. Run it by hand: Actions tab > "Spike - Parakeet speed on the runner" > Run workflow.
+# This repo is public, so the run log is public: use ONLY public-domain audio here, never a team recording. The script
+# prints counts and timings only (no transcript text), and this workflow uses no secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      audio_url:
+        description: "https URL of a public-domain English speech recording (default: LibriVox, Alice in Wonderland ch. 1, about 10 min)"
+        required: false
+        default: "https://archive.org/download/alice_in_wonderland_librivox/wonderland_ch_01_64kb.mp3"
+      repeat:
+        description: "Repeat the audio N times to reach longer lengths (1 = as is)"
+        required: false
+        default: "1"
+      threads:
+        description: "ONNX Runtime threads (0 = all vCPUs)"
+        required: false
+        default: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  spike:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MODEL_DIR: ${{ github.workspace }}/.cache/parakeet-v2-int8
+      # Keep in step with REVISION in scripts/spike/parakeet_spike.py
+      MODEL_REVISION: 0bbb45a3365852604aef28b538a8f066f4ccaa85
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Machine
+        run: |
+          echo "vCPUs: $(nproc)"
+          lscpu | grep -E "Model name|Thread|Core" || true
+          free -g | sed -n 2p | awk '{print "RAM (GB): " $2}'
+
+      - name: Install the runtime (timed)
+        run: |
+          START=$(date +%s)
+          python -m pip install -q "onnx-asr[cpu,hub]" psutil
+          if ! command -v ffmpeg >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; fi
+          echo "install seconds: $(( $(date +%s) - START ))"
+          python -m pip list 2>/dev/null | grep -iE "^(onnx-asr|onnxruntime|numpy|huggingface-hub) "
+
+      - name: Model cache
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MODEL_DIR }}
+          key: parakeet-v2-int8-${{ env.MODEL_REVISION }}
+
+      - name: Fetch the test audio (https only)
+        env:
+          AUDIO_URL: ${{ inputs.audio_url }}
+        run: |
+          case "$AUDIO_URL" in
+            https://*) ;;
+            *) echo "audio_url must start with https://"; exit 1 ;;
+          esac
+          curl -fsSL --max-time 300 -o "$RUNNER_TEMP/audio.input" "$AUDIO_URL"
+          echo "audio file bytes: $(stat -c %s "$RUNNER_TEMP/audio.input")"
+
+      - name: Run the spike (counts and timings only)
+        env:
+          REPEAT: ${{ inputs.repeat }}
+          THREADS: ${{ inputs.threads }}
+        run: |
+          echo "model cache hit: ${{ steps.model-cache.outputs.cache-hit }}"
+          T="${THREADS:-0}"; [ "$T" = "0" ] && T=$(nproc)
+          /usr/bin/time -v python scripts/spike/parakeet_spike.py "$RUNNER_TEMP/audio.input" \
+            --repeat "${REPEAT:-1}" --threads "$T" --cache-dir "$MODEL_DIR" 2> "$RUNNER_TEMP/time.txt" | tee "$RUNNER_TEMP/report.json"
+          grep -E "Maximum resident set size|Elapsed \(wall clock\)" "$RUNNER_TEMP/time.txt" | sed 's/^\s*/  /'
+
+      - name: Cache size
+        run: du -sh "$MODEL_DIR"
