@@ -193,7 +193,8 @@ test('stop: nothing running, several running, and wrong person', async () => {
 
   const ok = await t.run(slash('stop-recording', { channel: VC1 }));
   assert.ok(!isPrivate(ok));
-  assert.deepEqual(sessions(t.db).map((s) => s.stop_flag), [1, 0]);
+  const flagOf = (channel) => sessions(t.db).find((s) => s.voice_channel_id === channel).stop_flag;
+  assert.deepEqual([flagOf(VC1), flagOf(VC2)], [1, 0]); // sessions share a timestamp, so look them up by channel, not by order
 });
 
 test('stop: someone with Manage Server can stop another person\'s recording', async () => {
