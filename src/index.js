@@ -5,6 +5,7 @@ import { handleInteraction } from './commands.js';
 import { createBridgeClient } from './bridge.js';
 import { runCalendarSync } from './calendar-sync.js';
 import { createDiscordClient, verifyDiscordSignature } from './discord.js';
+import { createRecorderDispatcher } from './github.js';
 import { handleHttp } from './http.js';
 import { runDueJobs } from './scheduler.js';
 
@@ -24,6 +25,11 @@ const extraBridgeHosts = (env) =>
 
 function makeBridge(env) {
   return env.BRIDGE_SECRET ? createBridgeClient({ secret: env.BRIDGE_SECRET, extraHosts: extraBridgeHosts(env) }) : null;
+}
+
+// Recording is optional too: without GITHUB_DISPATCH_TOKEN and GITHUB_REPO, /start-recording says it is not set up.
+function makeRecorder(env) {
+  return createRecorderDispatcher({ token: env.GITHUB_DISPATCH_TOKEN, repo: env.GITHUB_REPO, ref: env.GITHUB_REF });
 }
 
 export default {
@@ -69,6 +75,7 @@ export default {
         db: env.DB,
         discord: makeDiscord(env),
         bridge: makeBridge(env),
+        recorder: makeRecorder(env),
         defer: (promise) => ctx.waitUntil(promise),
         extraHosts: extraBridgeHosts(env),
         nowSec,

@@ -28,6 +28,61 @@ export async function readStopFlag(db, id, nowSec) {
   return row.stop_flag === 1;
 }
 
+const LIVE = "('starting', 'running')";
+export const STALE_STARTING_SEC = 20 * 60; // the job never reported in (queue + start-up is normally under a minute or two)
+export const STALE_RUNNING_SEC = 6 * 3600; // longer than the workflow's own 5 hour limit, so the job is certainly gone
+
+/**
+ * A crashed or cancelled job would otherwise keep its channel "being recorded" for ever, because the database allows
+ * one live session per voice channel. Marks sessions that are too old to still be alive as failed.
+ */
+export async function failStaleSessions(db, guildId, nowSec) {
+  await db
+    .prepare(
+      `UPDATE recording_sessions SET status = 'failed', error = 'the recorder never finished', updated_at = ?
+       WHERE guild_id = ? AND ((status = 'starting' AND created_at < ?) OR (status = 'running' AND created_at < ?))`,
+    )
+    .bind(nowSec, guildId, nowSec - STALE_STARTING_SEC, nowSec - STALE_RUNNING_SEC)
+    .run();
+}
+
+/** Live (starting or running) sessions in a server, optionally for one voice channel. */
+export async function findLiveSessions(db, guildId, channelId = null) {
+  const sql = `SELECT * FROM recording_sessions WHERE guild_id = ? AND status IN ${LIVE}${channelId ? ' AND voice_channel_id = ?' : ''} ORDER BY created_at`;
+  const stmt = db.prepare(sql).bind(...(channelId ? [guildId, channelId] : [guildId]));
+  return (await stmt.all()).results;
+}
+
+/** Creates a session. { ok: false, conflict: true } when that voice channel already has a live one. */
+export async function createSession(db, { id, channelId, guildId, startedBy, meetingId = null }, nowSec) {
+  try {
+    await db
+      .prepare(
+        'INSERT INTO recording_sessions (id, voice_channel_id, guild_id, started_by, meeting_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .bind(id, channelId, guildId, startedBy, meetingId, 'starting', nowSec, nowSec)
+      .run();
+    return { ok: true };
+  } catch (e) {
+    if (/UNIQUE constraint failed/i.test(String(e?.message ?? ''))) return { ok: false, conflict: true };
+    throw e;
+  }
+}
+
+/** Asks the recorder to stop. It sees the flag on its next 15 second check. */
+export async function requestStop(db, id, nowSec) {
+  await db.prepare(`UPDATE recording_sessions SET stop_flag = 1, updated_at = ? WHERE id = ? AND status IN ${LIVE}`).bind(nowSec, id).run();
+}
+
+/** Ends a live session ('done' or 'failed'). Sessions that already ended are left alone. */
+export async function endSession(db, id, status, error, nowSec) {
+  const message = error ? String(error).slice(0, 300) : null;
+  await db
+    .prepare(`UPDATE recording_sessions SET status = ?, error = ?, updated_at = ? WHERE id = ? AND status IN ${LIVE}`)
+    .bind(status, message, nowSec, id)
+    .run();
+}
+
 export async function transcriptIdExists(db, id) {
   return (await db.prepare('SELECT 1 AS x FROM transcripts WHERE id = ?').bind(id).first()) !== null;
 }

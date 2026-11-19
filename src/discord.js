@@ -112,5 +112,24 @@ export function createDiscordClient({ token, apiBase = 'https://discord.com/api/
       { asBot: false },
     );
 
-  return { postMessage, sendFollowup, editOriginal };
+  /** Which voice channel a member is in right now: { ok: true, channelId } (null when in none) or { ok: false, error }. */
+  async function getVoiceChannelOf(guildId, userId) {
+    let res;
+    try {
+      res = await doFetch(`${apiBase}/guilds/${guildId}/voice-states/${userId}`, {
+        headers: { Authorization: `Bot ${token}`, 'User-Agent': 'DiscordBot (meeting-time-bot, 1.0.0)' },
+      });
+    } catch (e) {
+      return { ok: false, error: `network error: ${e?.message ?? e}` };
+    }
+    if (res.status === 404) return { ok: true, channelId: null }; // "Unknown Voice State": not in a voice channel
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    try {
+      return { ok: true, channelId: (await res.json())?.channel_id ?? null };
+    } catch {
+      return { ok: false, error: 'unreadable answer' };
+    }
+  }
+
+  return { postMessage, sendFollowup, editOriginal, getVoiceChannelOf };
 }

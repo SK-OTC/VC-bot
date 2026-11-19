@@ -1,9 +1,10 @@
-// HTTP endpoints the GitHub recorder calls. Both need `Authorization: Bearer <WORKER_SHARED_SECRET>`.
-//   GET  /api/sessions/<session id>/stop   -> { "stop": true | false }        (polled every 15 s while recording)
-//   POST /api/transcripts                  -> stores a finished transcript    (called once, at the end)
+// HTTP endpoints the GitHub recorder calls. All need `Authorization: Bearer <WORKER_SHARED_SECRET>`.
+//   GET  /api/sessions/<session id>/stop    -> { "stop": true | false }        (polled every 15 s while recording)
+//   POST /api/sessions/<session id>/finish  -> { "ok": true }                  (the job ended: { status: "done" | "failed", error? })
+//   POST /api/transcripts                   -> stores a finished transcript    (called once, at the end)
 // Nothing here ever logs transcript text, names or secrets.
 import { bearerMatches } from './secure.js';
-import { SESSION_ID_RE, getSession, readStopFlag, saveTranscript, transcriptIdExists } from './recording-store.js';
+import { SESSION_ID_RE, endSession, getSession, readStopFlag, saveTranscript, transcriptIdExists } from './recording-store.js';
 import { validateTranscriptPayload } from './transcript-payload.js';
 
 const MAX_BODY_CHARS = 1_000_000; // about 1 MB, as in the spec
@@ -14,8 +15,9 @@ const isUniqueViolation = (e) => /UNIQUE constraint failed/i.test(String(e?.mess
 
 export async function handleApi(request, env, url, nowSec) {
   const stopMatch = /^\/api\/sessions\/([^/]+)\/stop$/.exec(url.pathname);
+  const finishMatch = /^\/api\/sessions\/([^/]+)\/finish$/.exec(url.pathname);
   const isTranscripts = url.pathname === '/api/transcripts';
-  if (!stopMatch && !isTranscripts) return respond({ error: 'not found' }, 404);
+  if (!stopMatch && !finishMatch && !isTranscripts) return respond({ error: 'not found' }, 404);
 
   const method = stopMatch ? 'GET' : 'POST';
   if (request.method !== method) {
@@ -29,6 +31,7 @@ export async function handleApi(request, env, url, nowSec) {
 
   try {
     if (stopMatch) return await stopFlag(env, stopMatch[1], nowSec);
+    if (finishMatch) return await finishFromRecorder(request, env, finishMatch[1], nowSec);
     return await storeTranscript(request, env, nowSec);
   } catch (e) {
     // Never log the message: an exception message can contain anything, including request data. Only the
@@ -43,6 +46,25 @@ async function stopFlag(env, rawId, nowSec) {
   // An unknown or malformed session answers "keep going": a stray id must never stop a real recording.
   if (!SESSION_ID_RE.test(rawId)) return respond({ stop: false });
   return respond({ stop: await readStopFlag(env.DB, rawId, nowSec) });
+}
+
+/**
+ * The recorder calls this when its job ends for any reason (no speech, crash, cancelled), so the voice channel is
+ * free for the next /start-recording. An unknown or already-ended session is accepted and ignored.
+ */
+async function finishFromRecorder(request, env, rawId, nowSec) {
+  if (!SESSION_ID_RE.test(rawId)) return respond({ ok: true });
+  const text = await request.text();
+  if (text.length > 10_000) return respond({ error: 'body too large' }, 413);
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return respond({ error: 'body is not valid JSON' }, 400);
+  }
+  if (!body || (body.status !== 'done' && body.status !== 'failed')) return respond({ error: 'invalid fields', fields: ['status'] }, 400);
+  await endSession(env.DB, rawId, body.status, typeof body.error === 'string' ? body.error : null, nowSec);
+  return respond({ ok: true });
 }
 
 async function storeTranscript(request, env, nowSec) {

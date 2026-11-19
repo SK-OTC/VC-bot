@@ -15,6 +15,10 @@ database_id = ""
 
 [vars]
 DISCORD_API_BASE = "https://discord.com/api/v10"
+# /start-recording runs the recorder workflow in this repository. The token is a secret:
+#   npx wrangler secret put GITHUB_DISPATCH_TOKEN   (fine-grained token, this repo only, "Actions: Read and write")
+GITHUB_REPO = "SK-OTC/VC-bot"
+GITHUB_REF = "main"
 # DISCORD_PUBLIC_KEY is not secret, but keeping it in a secret avoids committing it:
 #   npx wrangler secret put DISCORD_PUBLIC_KEY
 #   npx wrangler secret put DISCORD_BOT_TOKEN

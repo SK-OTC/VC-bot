@@ -7,6 +7,7 @@ import { mkdirSync, rmSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseSessionConfig } from './recorder/config.mjs';
+import { reportFinish } from './recorder/report.mjs';
 import { shouldStop, trackEmpty, recordingNickname, batchAttachments } from './recorder/stop.mjs';
 import { finishSession } from './recorder/session.mjs';
 import { AlignedTrack } from './track.mjs';
@@ -100,9 +101,10 @@ async function main() {
   const abort = async (sig) => {
     if (aborted) return;
     aborted = true;
-    log(`received ${sig}: leaving without a transcript (use /record stop to end a meeting normally)`);
+    log(`received ${sig}: leaving without a transcript (use /stop-recording to end a meeting normally)`);
     connection.destroy();
     await restoreNick();
+    await reportFinish(process.env, 'failed', `cancelled (${sig}); no transcript`);
     process.exit(130);
   };
   process.on('SIGINT', () => abort('SIGINT'));
@@ -198,6 +200,7 @@ async function main() {
   if (stopInfo.empty || speakers.size === 0) {
     await retry(() => target.send({ content: `Recording ended: ${stopInfo.reason}. No speech was captured, so there is no transcript.`, allowedMentions: NOMENTIONS })).catch(() => {});
     await client.destroy();
+    await reportFinish(process.env, 'done', 'no speech captured');
     return rmSync(OUT_DIR, { recursive: true, force: true });
   }
 
@@ -265,6 +268,7 @@ async function main() {
     await retry(() => target.send({ content: `Transcription failed (${String(e.message).slice(0, 150)}). ${rescued ? 'The audio was saved to the backup channel so it can be transcribed later.' : 'The audio could not be saved and is gone.'}`, allowedMentions: NOMENTIONS })).catch(() => {});
     rmSync(OUT_DIR, { recursive: true, force: true });
     await client.destroy();
+    await reportFinish(process.env, 'failed', 'transcription failed');
     process.exit(3);
   }
   log(`done: ${JSON.stringify({ id: result.id, speakers: result.stats.speakers, batches: result.stats.batches, failed: result.stats.failed, fallback: result.stats.fallback, summarised: result.summarised, stored: result.stored })}`);
@@ -272,11 +276,13 @@ async function main() {
 
   rmSync(OUT_DIR, { recursive: true, force: true });
   await client.destroy();
+  await reportFinish(process.env, 'done'); // already 'done' if the transcript was stored; this covers "storage not configured"
   process.exit(0);
 }
 
-main().catch((e) => {
+main().catch(async (e) => {
   console.error(`ERROR: ${e.message}`);
+  await reportFinish(process.env, 'failed', e.message);
   try {
     if (readdirSync(OUT_DIR).length) console.error('Audio files from this run are being discarded with the machine.');
   } catch {}

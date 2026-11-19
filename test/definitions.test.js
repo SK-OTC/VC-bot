@@ -32,7 +32,7 @@ test('command definitions satisfy Discord registration rules', () => {
     'new-meeting', 'update-meeting', 'cancel-meeting', 'upcoming-meetings',
     'add-update-preset', 'meeting-presets', 'delete-preset',
     'add-team', 'remove-team-member', 'show-teams', 'delete-team',
-    'calendar', 'set-timezone',
+    'calendar', 'start-recording', 'stop-recording', 'set-timezone',
   ]);
   const seen = new Set();
   for (const c of COMMANDS) {
@@ -73,6 +73,18 @@ test('every option the handlers read exists in the definitions', () => {
   assert.deepEqual(optionNames('remove-team-member'), ['team', 'emails']);
   assert.deepEqual(optionNames('show-teams'), ['team']);
   assert.deepEqual(optionNames('delete-team'), ['team']);
+});
+
+test('recording commands: optional voice-channel picker (voice channels only), stop has force', () => {
+  assert.deepEqual(optionNames('start-recording'), ['channel']);
+  assert.deepEqual(optionNames('stop-recording'), ['channel', 'force']);
+  for (const name of ['start-recording', 'stop-recording']) {
+    const ch = byName(name).options.find((o) => o.name === 'channel');
+    assert.equal(ch.type, 7);
+    assert.deepEqual(ch.channel_types, [2]);
+    assert.ok(!ch.required);
+    assert.deepEqual(byName(name).contexts, [0]);
+  }
 });
 
 test('new-meeting: only name and date are required, so a saved time can be reused; name autocompletes', () => {

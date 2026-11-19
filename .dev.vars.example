@@ -12,5 +12,9 @@ DISCORD_APPLICATION_ID=your_application_id
 # value goes in the GitHub repo secret WORKER_SHARED_SECRET.
 # WORKER_SHARED_SECRET=long_random_string
 
+# /start-recording starts the GitHub recorder. A fine-grained personal access token limited to this one repository
+# with "Actions: Read and write". GITHUB_REPO and GITHUB_REF are set in wrangler.toml.
+# GITHUB_DISPATCH_TOKEN=github_pat_...
+
 # Google Calendar sync (optional). The same value goes in every meeting organizer's Apps Script property BOT_SECRET.
 # BRIDGE_SECRET=long_random_string

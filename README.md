@@ -168,7 +168,7 @@ Check them against your own Groq account's limits page.
 
 ## Tests
 
-`npm test` runs 40 offline tests: the settings parsers, pass/fail rules, the Ogg writer, the aligned tracks
+`npm test` runs the offline tests (over 200 now, including the Worker, commands and recording API). The recorder ones: the settings parsers, pass/fail rules, the Ogg writer, the aligned tracks
 and overlap measurement, the speech-span and batch logic, transcript clean-up and merging, the rate limiter,
 the Groq retry rules (against a fake `fetch`), summary chunking and message splitting, and the stop rules.
 One test decodes the Ogg writer's output with ffmpeg and is skipped when ffmpeg is not installed.
@@ -194,13 +194,34 @@ post messages and answer slash commands over HTTP, and the GitHub recorder logs 
 
 | Where | Files | Secrets |
 |-------|-------|---------|
-| Cloudflare Worker + D1 | `src/` (commands, scheduler, Google Calendar, recorder API), `migrations/`, `wrangler.toml`, `scripts/` | `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_TOKEN`, `WORKER_SHARED_SECRET` (and later `GITHUB_DISPATCH_TOKEN`, `GROQ_API_KEY`) |
+| Cloudflare Worker + D1 | `src/` (commands, scheduler, Google Calendar, recorder API), `migrations/`, `wrangler.toml`, `scripts/` | `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_TOKEN`, `WORKER_SHARED_SECRET`, `GITHUB_DISPATCH_TOKEN` |
 | GitHub Actions recorder | `record.mjs`, `recorder/`, `pipeline/`, `track.mjs`, `.github/workflows/record.yml` | `DISCORD_TOKEN` (the same bot's token), `GROQ_API_KEY`, `TEAM_CONFIG`, `WORKER_URL`, `WORKER_SHARED_SECRET` |
 
 `WORKER_SHARED_SECRET` is one long random string you make up. It goes in both places, and the recorder uses it to call
 the Worker's `GET /api/sessions/<id>/stop` and `POST /api/transcripts`. Set Worker secrets with
 `npx wrangler secret put NAME`, and GitHub secrets in the repo's Settings > Secrets and variables > Actions.
 Never commit `.dev.vars` (it is in `.gitignore`).
+
+### Starting and stopping a recording from Discord
+
+| Command | What it does |
+|---------|--------------|
+| `/start-recording [channel]` | Records the voice channel you are in (or the one you pick). The Worker starts the GitHub job; the bot joins within about a minute |
+| `/stop-recording [channel] [force]` | The bot leaves within about 15 seconds, then transcribes and posts as usual. Only the person who started it, or someone with Manage Server, can stop it. `force:True` clears a stuck recording |
+
+Anyone in the server can start a recording. The voice channel must have an entry in the `TEAM_CONFIG` GitHub secret,
+otherwise the job stops straight away (the Worker cannot see that secret, so it cannot warn you up front).
+
+One-time setup for `/start-recording`:
+
+1. GitHub > Settings > Developer settings > Fine-grained tokens > new token, limited to this one repository, with
+   **Actions: Read and write**. Then `npx wrangler secret put GITHUB_DISPATCH_TOKEN`.
+2. Check `GITHUB_REPO` (and `GITHUB_REF`, default `main`) in `wrangler.toml`.
+3. `npm run deploy`, then `npm run register` (the commands are new).
+
+Without the token the commands still exist and say recording is not set up. The recorder tells the Worker when its job
+ends (`POST /api/sessions/<id>/finish`), so an empty meeting or a crash frees the channel. Sessions that never report in
+are cleared automatically after 20 minutes (never started) or 6 hours (running).
 
 The original reminder-bot documentation is in [docs/meeting-time-bot.md](docs/meeting-time-bot.md).
 

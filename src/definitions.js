@@ -3,6 +3,7 @@
 
 const T = { SUB_COMMAND: 1, STRING: 3, INTEGER: 4, BOOLEAN: 5, CHANNEL: 7, ROLE: 8 };
 const CHANNEL_TYPES = [0, 2, 5]; // text, voice (its text chat), announcement
+const VOICE_ONLY = [2];
 
 const opt = (type, name, description, extra = {}) => ({ type, name, description, ...extra });
 
@@ -171,6 +172,23 @@ export const COMMANDS = [
       }),
       opt(T.SUB_COMMAND, 'disconnect', 'Disconnect your Google Calendar'),
       opt(T.SUB_COMMAND, 'status', 'Show whether your Google Calendar is connected'),
+    ],
+  },
+  {
+    name: 'start-recording',
+    description: 'Record, transcribe and summarise a voice channel meeting',
+    contexts: [0],
+    options: [
+      opt(T.CHANNEL, 'channel', 'Voice channel to record (default: the one you are in now)', { channel_types: VOICE_ONLY }),
+    ],
+  },
+  {
+    name: 'stop-recording',
+    description: 'End the recording now: the bot leaves, then posts the transcript and summary',
+    contexts: [0],
+    options: [
+      opt(T.CHANNEL, 'channel', 'Which voice channel (only needed if more than one is being recorded)', { channel_types: VOICE_ONLY }),
+      opt(T.BOOLEAN, 'force', 'Clear a stuck recording that will not stop (the bot may need to be removed by hand)'),
     ],
   },
   {
