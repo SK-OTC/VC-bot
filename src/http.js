@@ -58,10 +58,26 @@ async function handleShare(request, env, ctx, url, nowSec) {
   }
 }
 
+/**
+ * Is this POST from our own page (or from something that is not a browser)? Cross-site posts are refused: a page on another
+ * site must not be able to make a reader's browser ask questions.
+ *
+ * Our pages send `Referrer-Policy: no-referrer`, and browsers then send `Origin: null` even on a same-origin form post
+ * (measured in Chrome: Origin "null" with Sec-Fetch-Site "same-origin"). So "null" is accepted only when the browser also says
+ * Sec-Fetch-Site: same-origin, which a web page cannot forge. A sandboxed or redirected cross-site page sends "null" too, but
+ * with Sec-Fetch-Site cross-site, so it is still refused. A real Origin must equal this address.
+ */
+export function isOwnPost(headers, ownOrigin) {
+  const origin = headers.get('Origin');
+  const site = headers.get('Sec-Fetch-Site');
+  if (site && site !== 'same-origin') return false;
+  if (origin === null) return true; // no Origin at all: not a browser form post (or an old browser): nothing to compare
+  if (origin === 'null') return site === 'same-origin';
+  return origin === ownOrigin;
+}
+
 async function handleQuestion(request, env, ctx, url, nowSec, t, enabled, view) {
-  // Cross-site posts are refused: a page on another site must not be able to make a reader's browser ask questions.
-  const origin = request.headers.get('Origin');
-  if ((origin && origin !== url.origin) || request.headers.get('Sec-Fetch-Site') === 'cross-site') return plain(403, 'Forbidden');
+  if (!isOwnPost(request.headers, url.origin)) return plain(403, 'Forbidden');
   if (!enabled) return page(view());
   if (!/^application\/x-www-form-urlencoded\b/i.test(request.headers.get('Content-Type') ?? '')) return plain(415, 'Unsupported Media Type');
   const declared = Number(request.headers.get('Content-Length'));

@@ -1,15 +1,19 @@
 # Voice recording, transcripts and summaries
 
-Two parts live in this folder:
+One Discord bot, in one repository, in three parts:
 
 1. **Feasibility test** (`record-test.mjs`): can a bot join a Discord voice channel under Discord's
-   end-to-end encryption (DAVE) and record one clear, time-aligned track per speaker, from your computer
-   and from a GitHub Actions runner? It does not transcribe anything.
-2. **Meeting recorder** (`record.mjs` and friends): the real thing. Records a meeting, transcribes it,
-   posts a transcript and a summary with action items to the team's private channel.
+   end-to-end encryption (DAVE) and record one clear, time-aligned track per speaker? It does not transcribe anything.
+2. **Meeting recorder** (`record.mjs` and friends, run by GitHub Actions): the real thing. Records a meeting, transcribes it
+   (Parakeet on the runner, Groq Whisper as the fallback), writes a summary with action items, and posts both to the team's
+   private channel.
+3. **The Cloudflare Worker** (`src/`): the slash commands (meetings, reminders, Google Calendar, recording setup), the
+   recorder's API, the private web page for each transcript with "ask about this meeting", and the database.
 
-The Cloudflare Worker side (`/record`, `/transcript`, share pages, storage) is **not in this folder**.
-The plan for it is in the separate build instructions document (v2.1).
+Where to find things: [Part 1](#part-1-feasibility-test) · [Part 2](#part-2-recording-transcripts-and-summaries) ·
+[Transcription and glossary](#transcription-parakeet-on-the-runner-groq-whisper-as-the-fallback) · [What is tested](#what-is-and-is-not-tested) ·
+[Part 3: the Worker](#part-3-the-cloudflare-worker-one-bot-one-repo) · [Setting up a server](#setting-up-a-server-setup-recording-no-github-secret-to-edit) ·
+[Web links and Q&A](#private-web-links-for-transcripts) · [Summaries and the Neuron budget](#summaries-llama-33-on-cloudflare-groq-as-the-fallback-and-the-neuron-budget)
 
 ## Part 1: feasibility test
 
@@ -63,13 +67,16 @@ already connected can leave the first packets undecryptable.
 
 ### Step 3: run it on GitHub
 
-1. The repo is `SK-OTC/VC-bot`. Keep it public (logs of a public repo are public, see below).
-2. Repo > Settings > Secrets and variables > Actions > New secret: `DISCORD_TOKEN`.
-3. Actions tab > "Voice recording test" > Run workflow. Fill in the two channel IDs.
-4. Join the voice channel and talk during the run.
+The separate "Voice recording test" workflow that used to run this test on GitHub is no longer in the repository (the file
+`.github/workflows/voice-test.yml` was deleted). To check the same thing on a runner, use the real recorder instead: set it
+up as described in Part 2 and start "Record meeting" from the Actions tab, then join the voice channel and talk.
 
-Logs in a public repo are public. This test prints only counts and anonymous labels
-(`speaker-1`). Do not add logging of names, audio or tokens.
+1. The repo is `SK-OTC/VC-bot`. Keep it public (logs of a public repo are public, see below).
+2. Repo > Settings > Secrets and variables > Actions > New secret: `DISCORD_TOKEN` (and the others listed in Part 2).
+3. Actions tab > "Record meeting" > Run workflow.
+
+Logs in a public repo are public. The feasibility test (`npm run record`) prints only counts and anonymous labels
+(`speaker-1`), and so does the recorder. Do not add logging of names, audio or tokens.
 
 ### Reading the result
 
@@ -105,11 +112,18 @@ with what you hear when you play both speakers' files together.
 | `recorder/config.mjs` | Reads settings; takes the channel settings from `/setup-recording` (via `recorder/remote-config.mjs`) or the optional `TEAM_CONFIG` secret; refuses to run without them |
 | `recorder/stop.mjs` | Stop rules (limit, empty channel, silence, stop flag), nickname, attachment batching |
 | `recorder/session.mjs` | After the meeting: transcribe, post transcript, summary, audio backup, upload to the Worker |
-| `pipeline/*` | Silence cutting, batching, the transcription engines, glossary correction, clean-up, merge, summary, upload |
-| `pipeline/parakeet.mjs`, `pipeline/parakeet_worker.py` | The main transcriber: Parakeet TDT 0.6B v2 on the CPU (see "Transcription" below) |
-| `pipeline/engines.mjs`, `pipeline/time-budget.mjs` | Which engines run (`ENGINE_ORDER`) and the transcription time budget |
-| `transcribe.mjs` | Command line: a folder of `speaker-N-001.ogg` files in, `transcript.txt` (and `summary.txt`) out |
-| `.github/workflows/record.yml` | The job the Worker starts (or you start by hand) |
+| `recorder/report.mjs` | Tells the Worker the job has ended (done or failed), so the voice channel is free again |
+| `pipeline/run.mjs`, `batches.mjs`, `spans.mjs`, `extract.mjs`, `ffmpeg.mjs` | Silence cutting, batching, extracting each batch, mapping times back; the two-phase run with retries, fallback and the time budget |
+| `pipeline/parakeet.mjs`, `parakeet_worker.py`, `parakeet-segments.mjs`, `parakeet-model.json` | The main transcriber: Parakeet TDT 0.6B v2 on the CPU, words to segments, the pinned model (see "Transcription" below) |
+| `pipeline/groq.mjs`, `limiter.mjs` | Groq Whisper (the fallback) and the rate limiters (`whisperLimiter`, `chatLimiter`, `cfLimiter`) |
+| `pipeline/engines.mjs`, `time-budget.mjs` | Which engines run (`ENGINE_ORDER`) and the transcription time budget |
+| `pipeline/glossary.mjs`, `glossary-fix.mjs`, `english-words.txt` | The glossary: the Whisper prompt, the post-correction, and the list of ordinary words it never changes |
+| `pipeline/cleanup.mjs`, `transcript.mjs` | Dropping invented text, merging speakers' lines, the transcript header |
+| `pipeline/summary.mjs`, `prompts.mjs`, `verify.mjs`, `cloudflare.mjs`, `providers.mjs`, `budget.mjs` | The summary: prompts, the Cloudflare Llama and Groq clients and their fallback order, the check against the transcript, the Neuron budget |
+| `pipeline/upload.mjs` | Sending the finished transcript to the Worker |
+| `transcribe.mjs` | Command line: a folder of `speaker-N-001.ogg` files in, a transcript (and optionally a summary) out |
+| `.github/workflows/record.yml` | The job the Worker starts (or you start by hand): installs Parakeet, caches its model, records, transcribes, posts |
+| `.github/workflows/spike-parakeet.yml`, `scripts/spike/` | Manual measurements: Parakeet's speed on a runner, VAD versus windows, a Cloudflare API probe |
 
 ### Try the transcription on a recording you already have
 
@@ -118,18 +132,47 @@ Put the `speaker-1-001.ogg`, `speaker-2-001.ogg` ... files in one folder. Option
 
 ```
 npm ci
-node transcribe.mjs path/to/folder --dry-run        # no key needed: shows how much speech and how many requests
-GROQ_API_KEY=... GLOSSARY="LiteCut, CapCut" node transcribe.mjs path/to/folder --summary
+node transcribe.mjs path/to/folder --dry-run        # no key needed: shows how much speech and how many batches
 ```
 
-This needs ffmpeg (and ffprobe) installed on your computer. It writes `transcript.txt` (and `summary.txt`)
-into the folder. Do this first: it is the quality check, and the first real call confirms Groq's endpoint addresses.
+With Groq (needs a key):
+
+```
+# bash / Git Bash
+GROQ_API_KEY=... ENGINE_ORDER=groq GLOSSARY="LiteCut, CapCut" node transcribe.mjs path/to/folder --summary --out groq.txt
+
+# PowerShell (the line above is not valid there)
+$env:GROQ_API_KEY = "..."; $env:ENGINE_ORDER = "groq"; node transcribe.mjs path/to/folder --summary --out groq.txt
+```
+
+With Parakeet (no Groq key needed for the transcript, and the audio stays on your computer): install Python 3 and
+`pip install "onnx-asr[cpu,hub]==0.12.0"` (a virtual environment is fine), and point the tool at that Python with
+`PARAKEET_PYTHON` (default: `python` on Windows, `python3` elsewhere). The first run downloads the model (about 660 MB) into
+`PARAKEET_MODEL_DIR` (default: `~/.cache/vc-bot/parakeet-v2-int8`).
+
+```
+# bash / Git Bash
+ENGINE_ORDER=parakeet node transcribe.mjs path/to/folder --out parakeet.txt
+
+# PowerShell
+$env:ENGINE_ORDER = "parakeet"; node transcribe.mjs path/to/folder --out parakeet.txt
+```
+
+This needs ffmpeg (and ffprobe) installed on your computer. `--out` is a file name (not a path); the file is written inside
+the folder (default `transcript.txt`), so you can run both engines on the same folder and compare the two files. If any
+glossary correction was made, `<name>.glossary-fixes.json` is written beside it (for example `groq.txt.glossary-fixes.json`).
+`--summary` always uses Groq, so it needs `GROQ_API_KEY`, and writes `summary.txt`. `ENGINE_ORDER` defaults to `parakeet,groq`.
+This is the quality check: do it before relying on the recorder.
 
 ### Run the recorder on GitHub
 
 1. Repo secrets: `DISCORD_TOKEN`, `GROQ_API_KEY`, `WORKER_URL` and `WORKER_SHARED_SECRET`. The last two are how the
    job fetches the channel settings made with `/setup-recording`, polls the stop flag and stores the transcript.
-   (`TEAM_CONFIG` is no longer needed: see below.)
+   (`TEAM_CONFIG` is no longer needed: see below.) Optional but recommended: `CLOUDFLARE_ACCOUNT_ID` and
+   `CLOUDFLARE_API_TOKEN` (a token with **Workers AI** permission only), so the summary is written by Llama 3.3 on
+   Cloudflare. Without them the job logs that Cloudflare is skipped and Groq writes the summary.
+   Optional repository **variables** (Settings > Secrets and variables > Actions > Variables; they are public in a public
+   repo, so put only names and numbers there): `ENGINE_ORDER`, `PARAKEET_BUDGET_MIN`, `SUMMARY_MODEL_ORDER`.
 2. **Tell the bot where each voice channel's transcript goes, in Discord, with `/setup-recording`** (see the next
    section). The optional `TEAM_CONFIG` secret still works as a fallback for runs you start by hand without a session
    (the settings from `/setup-recording` win when both exist). It is JSON, keyed by voice channel ID:
@@ -165,11 +208,16 @@ It refuses to record if it can neither rename itself nor post the notice.
 | `ENGINE_ORDER` | `parakeet,groq` | Transcription engines, main first (`groq,parakeet` flips them). A repository *variable*: public, so names only |
 | `PARAKEET_BUDGET_MIN` | 120 | Minutes transcription may take before the rest goes to the fallback (5 to 300). Also a repository variable |
 | `PARAKEET_PYTHON`, `PARAKEET_MODEL_DIR`, `PARAKEET_THREADS` | set by the workflow | Python with `onnx-asr`, where the model is cached, ONNX threads (default: all vCPUs) |
+| `SUMMARY_MODEL_ORDER` | `cloudflare-llama,groq-gpt-oss` | Which models write the summary, first choice first. A repository variable |
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | unset | Secrets for the Cloudflare summary model (the id is 32 hex characters; the token needs Workers AI only) |
+| `READY_TIMEOUT_SEC` | 30 | How long to wait for the voice connection to be ready (5 to 120) |
+| `SESSION_ID` | set by the Worker | Which `/start-recording` session this run belongs to (4 to 40 letters, digits, `-`, `_`) |
+| `OUT_DIR` | `recordings` | Where the per-speaker audio is written during the run (deleted at the end) |
 | `GROQ_BASE_URL` | Groq's address | For tests against a fake server |
 | `LANGUAGE`, `GLOSSARY` | `en`, empty | Used by `transcribe.mjs` |
 
-Rate limits are in `pipeline/limiter.mjs` (`whisperLimiter`, `chatLimiter`). They are cautious defaults.
-Check them against your own Groq account's limits page.
+Rate limits are in `pipeline/limiter.mjs` (`whisperLimiter`, `chatLimiter`, `cfLimiter` at 20 requests a minute for
+Cloudflare). They are cautious defaults. Check them against your own Groq and Cloudflare account limits.
 
 ## Transcription (Parakeet on the runner, Groq Whisper as the fallback)
 
@@ -238,10 +286,27 @@ different licence for its hosted service; the Hugging Face model card governs th
 
 ## Tests
 
-`npm test` runs the offline tests (over 200 now, including the Worker, commands and recording API). The recorder ones: the settings parsers, pass/fail rules, the Ogg writer, the aligned tracks
-and overlap measurement, the speech-span and batch logic, transcript clean-up and merging, the rate limiter,
-the Groq retry rules (against a fake `fetch`), summary chunking and message splitting, and the stop rules.
-One test decodes the Ogg writer's output with ffmpeg and is skipped when ffmpeg is not installed.
+`npm test` runs the offline tests: 437 at the time of writing, all passing. They need no network and no keys.
+
+* **Recorder and pipeline:** the settings parsers, pass/fail rules, the Ogg writer, the aligned tracks and overlap
+  measurement, the speech-span and batch logic, transcript clean-up and merging, the rate limiters, the Groq retry rules
+  (against a fake `fetch`), summary chunking and message splitting, and the stop rules.
+* **Parakeet:** tokens to words to segments, the engine against a fake worker process (start, restart, timeouts, queueing,
+  clean shutdown), the engine order and time budget, and the glossary post-correction (listed, fuzzy and case fixes, the
+  ordinary-word guard, capitalisation).
+* **The pipeline end to end on synthetic audio**, with fake engines: retry, budget rerouting to the fallback, the visible
+  placeholder when both fail.
+* **Summary and questions:** the Cloudflare and Groq clients, the fallback chain, the timestamp check, the Neuron meter and
+  its caps, hybrid retrieval, the rate limits and the prompt-injection wrapping of excerpts.
+* **The Worker:** commands, setup and recording commands, the recorder API, share links and the share page (escaping, CSP,
+  contrast of the colours), against an in-memory D1 stand-in (`test/helpers/d1.js`).
+* **Python:** `pipeline/test_parakeet_worker.py` (8 tests of the window splitting and the worker protocol). `npm test` does not
+  run it; `record.yml` does, before each recording.
+
+Tests that decode audio with ffmpeg (`ogg.test.js` and `pipeline-engines.test.js`) are skipped when ffmpeg is not installed.
+`npm run smoke` is a separate check: it runs the Worker on the real Workers runtime with a local database and a mock Discord
+API (no Discord account, no Cloudflare login, no network), signs requests the way Discord does, runs the slash commands and
+fires the cron trigger.
 
 ## What is and is not tested
 
@@ -251,11 +316,24 @@ The tests prove logic only. They do **not** prove:
   OpenAI-compatible design).
 * Joining Discord voice in `record.mjs`: the notice, rename and stop loop have not run against Discord, and the
   recorder's per-speaker streams have not been exercised in a real overlapping conversation.
-* The whole audio-to-transcript pipeline with real ffmpeg on real audio (`runPipeline`, `extract.mjs`).
-* `summarize` and `finishSession` against a real model, and `record.yml` itself (it has never run).
-* Parakeet's **accuracy** on your voices (nothing has measured its word error rate yet), its speed on multi-speaker meetings, and a 2-hour run. Its speed on one clean 10-minute recording was measured on a real runner (15x real time, 1.9 GB).
+* `record.yml` with Parakeet and Cloudflare: the version that installs Parakeet, caches the model and calls Cloudflare
+  has **not been run on GitHub**. The log of the first run is public in a public repo: check it contains no names or transcript text.
+* Cloudflare behaviour the tests only imitate: the Vectorize namespace upsert and query, the exact result shapes the Workers AI
+  binding returns, whether the Neuron meter agrees with the Cloudflare dashboard (it is an estimate: compare them over a
+  full day), and Llama's summary quality.
+* Discord and GitHub calls made by the Worker: dispatching the workflow, and `GET /guilds/{id}/voice-states/{user}` (used by
+  `/start-recording` to find your voice channel).
+* Whether the real model resists an instruction hidden in a transcript ("ignore your instructions"). The prompts quote
+  excerpts as data and the tests check the wrapping, not the model's behaviour.
+* Parakeet's **accuracy** on your voices: nothing has measured its word error rate against Groq yet. Its speed on multi-speaker
+  meetings and a 2-hour run are also unmeasured.
 
-Only a real run can show those.
+What **has** been run for real: `runPipeline` on a 4-minute recording with real ffmpeg and real Parakeet on a laptop (36
+segments, none over 15 s, the last line at 239.2 of 240 s, the model loaded once); Parakeet's speed on one clean
+10-minute recording on a real GitHub runner (15 times real time, 1.9 GB of memory); all 11 migrations on a real local D1
+database; and `npm run smoke` (27 checks against a local Worker).
+
+Only a real run can show the rest.
 
 ## Part 3: the Cloudflare Worker (one bot, one repo)
 
@@ -264,13 +342,27 @@ post messages and answer slash commands over HTTP, and the GitHub recorder logs 
 
 | Where | Files | Secrets |
 |-------|-------|---------|
-| Cloudflare Worker + D1 | `src/` (commands, scheduler, Google Calendar, recorder API), `migrations/`, `wrangler.toml`, `scripts/` | `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_TOKEN`, `WORKER_SHARED_SECRET`, `GITHUB_DISPATCH_TOKEN` |
-| GitHub Actions recorder | `record.mjs`, `recorder/`, `pipeline/`, `track.mjs`, `.github/workflows/record.yml` | `DISCORD_TOKEN` (the same bot's token), `GROQ_API_KEY`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `WORKER_URL`, `WORKER_SHARED_SECRET` (`TEAM_CONFIG` is optional) |
+| Cloudflare Worker + D1 | `src/` (commands, scheduler, Google Calendar, recorder API, share pages, questions), `migrations/`, `wrangler.toml`, `scripts/` | `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_TOKEN`, `WORKER_SHARED_SECRET`, `GITHUB_DISPATCH_TOKEN`; optional `GROQ_API_KEY` (Groq answers questions when Cloudflare cannot) and `BRIDGE_SECRET` (the Google Calendar bridge) |
+| GitHub Actions recorder | `record.mjs`, `recorder/`, `pipeline/`, `track.mjs`, `.github/workflows/record.yml` | `DISCORD_TOKEN` (the same bot's token), `GROQ_API_KEY`, `WORKER_URL`, `WORKER_SHARED_SECRET`; optional `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (`TEAM_CONFIG` is optional too) |
 
-`WORKER_SHARED_SECRET` is one long random string you make up. It goes in both places, and the recorder uses it to call
-the Worker's `GET /api/sessions/<id>/stop` and `POST /api/transcripts`. Set Worker secrets with
-`npx wrangler secret put NAME`, and GitHub secrets in the repo's Settings > Secrets and variables > Actions.
-Never commit `.dev.vars` (it is in `.gitignore`).
+`WORKER_SHARED_SECRET` is one long random string you make up. It goes in both places, and the recorder uses it (as a
+bearer token) to call the Worker's recorder API:
+
+| Call | Used for |
+|------|----------|
+| `GET /api/sessions/<id>/stop` | Polled every 15 s: has someone asked it to stop? |
+| `GET /api/sessions/<id>/config` | The `/setup-recording` settings for this session's voice channel |
+| `POST /api/sessions/<id>/finish` | Tells the Worker the job ended (done or failed), freeing the channel |
+| `GET /api/ai-budget` | Whether today's shared Neuron budget still allows a Cloudflare summary |
+| `POST /api/transcripts` | Stores the finished transcript and returns the private link |
+
+Set Worker secrets with `npx wrangler secret put NAME`, and GitHub secrets in the repo's Settings > Secrets and variables >
+Actions. Never commit `.dev.vars` (it is in `.gitignore`).
+
+**Keep two Cloudflare tokens apart.** The `CLOUDFLARE_API_TOKEN` for the recorder is a Workers AI-only token and belongs in
+GitHub secrets. Do not also put it in this project's `.env`: Wrangler reads `CLOUDFLARE_API_TOKEN` from `.env` and uses it
+instead of your `wrangler login`, so commands such as `npm run db:migrate:remote` fail with *Authentication error [code:
+10000]*. Remove those lines from `.env` (or give Wrangler a token that can edit D1).
 
 ### Starting and stopping a recording from Discord
 
@@ -375,7 +467,8 @@ Setup:
    on the Worker only) so Groq can answer when Cloudflare cannot. With neither, the page has no question box.
 2. For meaning-based search, create the vector index **before deploying** (the bindings in `wrangler.toml` need it):
    `npx wrangler vectorize create vc-bot-chunks --dimensions=768 --metric=cosine`
-3. `npm run db:migrate:remote` (applies `0007` to `0010`), then `npm run deploy`.
+3. `npm run db:migrate:remote` (applies any migration not yet applied, up to `0011`), then `npm run deploy`. If it fails
+   with *Authentication error [code: 10000]*, see "Keep two Cloudflare tokens apart" above.
 
 How the vector index is used:
 
@@ -393,8 +486,10 @@ How the vector index is used:
 * The question and the transcript chunks are sent to Cloudflare Workers AI to be embedded (in addition to Groq
   receiving the parts used for the answer). To remove a transcript's vectors, call `deleteEmbeddings` in
   `src/semantic.js`; deleting a transcript row does not remove them by itself.
-* Local `wrangler dev` cannot reach these services without a Cloudflare login (they always run remotely); the
-  offline tests use fakes.
+* The offline tests and `npm run smoke` use fakes for Workers AI and Vectorize. Whether the real bindings behave as the
+  fakes assume has not been checked (see "What is and is not tested").
+
+Protections around a question:
 
 * **Only this meeting.** Retrieval is limited to the transcript the link opens, so one link can never reveal another meeting.
 * **Words from the meeting are data, not instructions.** They are passed to the model as quoted material, the model has
@@ -411,7 +506,9 @@ How the vector index is used:
   "Q&A is paused until midnight UTC." without calling any model. Failed attempts count. Questions are limited to 500 characters.
 * **Questions and answers are not stored or logged.** The database keeps only a count and a time per question. Logs hold
   the model name, the Neuron count and the duration, never any text.
-* **Forms from other websites are refused** (the `Origin` is checked), and expired or revoked links cannot ask anything.
+* **Forms from other websites are refused** (the `Origin` and the browser's `Sec-Fetch-Site` are checked; because the page
+  sends `no-referrer`, a same-origin post arrives with `Origin: null`, which is accepted only together with
+  `Sec-Fetch-Site: same-origin`), and expired or revoked links cannot ask anything.
 * **Privacy:** the question, the summary and the parts of the transcript used for an answer go to Cloudflare Workers AI
   (or Groq when it is the fallback). See "Data terms" below.
 
@@ -451,7 +548,7 @@ Published rates (Cloudflare pricing page): Llama 3.3 70B costs 26,668 Neurons pe
 million output tokens. For a probe of 42 input + 2 output tokens these give 1.529666 and Cloudflare reported 1.529653
 (agreeing to four decimal places). The model's context window is **24,000 tokens** for prompt and answer together
 (Cloudflare's model page), so the 4,500-token chunks and 6,000-token excerpts fit comfortably. Whether the meter matches
-the Cloudflare dashboard within 20% over a full day has **not** been measured yet (see the build plan, step 10).
+the Cloudflare dashboard within 20% over a full day has **not** been measured yet: compare the two after a day of real use.
 
 **Secrets and settings.** Never paste a token into chat or a file in the repo.
 
@@ -484,9 +581,14 @@ The original reminder-bot documentation is in [docs/meeting-time-bot.md](docs/me
 
 ```
 npm test                        # all offline tests (Worker + recorder)
+npm run smoke                   # the Worker on the real runtime with a local database and a mock Discord
 npm run db:migrate:local        # apply migrations to a local test database
+npm run db:migrate:remote       # apply new migrations to the real database (needs your Cloudflare login)
 npm run deploy                  # publish the Worker (after db:migrate:remote and setting the secrets)
-npm run register                # (re)register the slash commands with Discord
+npm run register                # (re)register all 20 slash commands with Discord (re-run it after any command text changes)
+npm run transcribe -- <folder>  # transcribe a folder of speaker-N-001.ogg files (see Part 2)
+npm run record-meeting          # what the GitHub job runs: join, record, transcribe, post (needs the settings above)
+npm run record                  # Part 1's feasibility test
 ```
 
 One bot records one voice channel per server at a time, and while it records it renames itself `[REC] ...` in that

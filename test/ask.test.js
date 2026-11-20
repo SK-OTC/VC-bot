@@ -301,6 +301,25 @@ test('cross-site posts are refused (CSRF); same-site posts work', async () => {
   }
 });
 
+test('Origin "null" (what browsers send from a no-referrer page): allowed only when the browser says same-origin', async () => {
+  const t = setup();
+  const path = await t.upload();
+  const groq = fakeGroq();
+  try {
+    // the real browser case: the page sends Referrer-Policy: no-referrer, so a same-origin form post carries Origin: null
+    assert.equal((await t.ask(path, 'hi there', { headers: { Origin: 'null', 'Sec-Fetch-Site': 'same-origin' } })).status, 200);
+    // a sandboxed or cross-site page also sends "null", but its Sec-Fetch-Site gives it away
+    assert.equal((await t.ask(path, 'hi there', { headers: { Origin: 'null', 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+    assert.equal((await t.ask(path, 'hi there', { headers: { Origin: 'null', 'Sec-Fetch-Site': 'same-site' } })).status, 403);
+    // "null" with no Sec-Fetch-Site cannot be told apart from an attacker's page: refused
+    assert.equal((await t.ask(path, 'hi there', { headers: { Origin: 'null' } })).status, 403);
+    // a sibling site is not our page
+    assert.equal((await t.ask(path, 'hi there', { headers: { Origin: 'https://worker.example', 'Sec-Fetch-Site': 'same-site' } })).status, 403);
+  } finally {
+    groq.restore();
+  }
+});
+
 test('expired, revoked, wrong or malformed links cannot ask: same 404, no Groq call, nothing counted', async () => {
   const t = setup({ SHARE_LINK_DAYS: '1' });
   const path = await t.upload();
