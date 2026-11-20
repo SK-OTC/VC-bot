@@ -50,7 +50,7 @@ import {
 import { DEFAULT_DURATION_MIN, parseDuration, parseReminder } from './duration.js';
 import { canManageOwner, fail, optionMap, reply } from './replies.js';
 import { cmdStartRecording, cmdStopRecording } from './recording-commands.js';
-import { cmdShareTranscript, cmdUnshareTranscript } from './share-commands.js';
+import { cmdTranscriptSettings } from './transcript-settings-commands.js';
 import { cmdRecordingSettings, cmdRemoveRecordingSetup, cmdSetupRecording } from './setup-commands.js';
 import { NOT_ENABLED, cmdCalendar, cmdGuests, followupFrom, newEventId, resolveTeam, suggestTeams } from './calendar-commands.js';
 
@@ -781,10 +781,8 @@ export async function handleInteraction(interaction, { db, discord, bridge = nul
       return cmdRecordingSettings(ctx, o);
     case 'remove-recording-setup':
       return cmdRemoveRecordingSetup(ctx, o);
-    case 'share-transcript':
-      return cmdShareTranscript(ctx, o);
-    case 'unshare-transcript':
-      return cmdUnshareTranscript(ctx, o);
+    case 'transcript-settings':
+      return cmdTranscriptSettings(ctx, o);
   }
   return fail("I don't know that command.");
 }

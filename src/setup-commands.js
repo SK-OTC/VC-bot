@@ -9,7 +9,7 @@ import { MAX_SETUPS_PER_GUILD, countRecordingSetups, deleteRecordingSetup, getRe
 const SNOWFLAKE_RE = /^\d{17,20}$/;
 const LANGUAGE_RE = /^[a-z]{2,3}$/;
 const VOICE = 2;
-const TEXT_TYPES = [0, 5]; // text, announcement
+export const TEXT_TYPES = [0, 5]; // text, announcement
 const MAX_NAME = 50;
 const MAX_GLOSSARY = 500;
 
@@ -26,7 +26,7 @@ function tidy(text) {
 const needsIn = (id, wants) => `<#${id}>: I need ${wants}.`;
 
 /** Replies at once with a "thinking" placeholder and edits it when `run` finishes (Discord allows 3 seconds to answer). */
-function respondLater(ctx, run) {
+export function respondLater(ctx, run) {
   const { defer, discord, interaction } = ctx;
   const { application_id: appId, token } = interaction;
   const priv = (content) => reply(content, { ephemeral: true });
@@ -47,7 +47,7 @@ function respondLater(ctx, run) {
   return { type: ResponseType.DEFERRED, data: { flags: MessageFlags.EPHEMERAL } };
 }
 
-const channelProblem = (id, got, { types, label }, guildId) => {
+export const channelProblem = (id, got, { types, label }, guildId) => {
   if (!got.ok) {
     return got.status === 403 || got.status === 404
       ? `I can't see <#${id}> (${label}). Give the bot **View Channel** there, then run this again.`
@@ -63,7 +63,7 @@ export async function cmdSetupRecording(ctx, o) {
   const { db, discord, nowSec, userId, guildId } = ctx;
 
   const voiceId = String(o.voice_channel ?? '');
-  const transcriptId = String(o.transcript_channel ?? '');
+  const transcriptId = o.transcript_channel ? String(o.transcript_channel) : null; // optional: by default the channel where recording is started
   const backupId = o.backup_channel ? String(o.backup_channel) : null;
   for (const id of [voiceId, transcriptId, backupId].filter(Boolean)) {
     if (!SNOWFLAKE_RE.test(id)) return fail('One of the channels is not valid. Pick them from the list Discord shows.');
@@ -86,12 +86,12 @@ export async function cmdSetupRecording(ctx, o) {
   return respondLater(ctx, async () => {
     const [voice, transcript, backup] = await Promise.all([
       discord.getChannel(voiceId),
-      discord.getChannel(transcriptId),
+      transcriptId ? discord.getChannel(transcriptId) : Promise.resolve(null),
       backupId ? discord.getChannel(backupId) : Promise.resolve(null),
     ]);
     const problems = [
       channelProblem(voiceId, voice, { types: [VOICE], label: 'voice channel' }, guildId),
-      channelProblem(transcriptId, transcript, { types: TEXT_TYPES, label: 'text channel' }, guildId),
+      transcript ? channelProblem(transcriptId, transcript, { types: TEXT_TYPES, label: 'text channel' }, guildId) : null,
       backup ? channelProblem(backupId, backup, { types: TEXT_TYPES, label: 'text channel' }, guildId) : null,
     ].filter(Boolean);
     if (problems.length) return `Nothing was saved.\n${problems.map((p) => `• ${p}`).join('\n')}`;
@@ -101,7 +101,7 @@ export async function cmdSetupRecording(ctx, o) {
     // transcript channel has not been told that recording is on.
     const posts = [
       ...(backupId ? [[backupId, 'View Channel, Send Messages and Attach Files', `Audio backups for meetings in <#${voiceId}> will be posted in this channel.`]] : []),
-      [transcriptId, 'View Channel, Send Messages, Attach Files and Read Message History', `🔴 Meetings in <#${voiceId}> are now recorded and transcribed. Each transcript and summary will be posted in this channel.`],
+      ...(transcriptId ? [[transcriptId, 'View Channel, Send Messages, Attach Files and Read Message History', `🔴 Meetings in <#${voiceId}> are now recorded and transcribed. Each transcript and summary will be posted in this channel.`]] : []),
     ];
     const blocked = [];
     for (const [id, wants, content] of posts) {
@@ -122,7 +122,7 @@ export async function cmdSetupRecording(ctx, o) {
     if (!saved.ok) return 'That voice channel already belongs to another server, so it cannot be set up here.';
     return (
       `${saved.updated ? 'Updated' : 'Saved'} the recording setup for <#${voiceId}> (**${name}**).\n` +
-      `• Transcript and summary: <#${transcriptId}>\n` +
+      (transcriptId ? `• Transcript and summary: <#${transcriptId}>\n` : '• Transcript and summary: the channel where each recording is started (change that with `/transcript-settings`)\n') +
       (backupId ? `• Audio backup: <#${backupId}>\n` : '• Audio backup: none\n') +
       `• Language: ${language}${glossary ? `\n• Glossary: ${glossary}` : ''}\n` +
       `Still to check by hand: the bot needs **View Channel** and **Connect** in <#${voiceId}> and **Change Nickname** in the server. ` +
@@ -135,7 +135,7 @@ export async function cmdRecordingSettings(ctx, o) {
   if (!hasManagePerms(ctx.interaction)) return fail(NEEDS_MANAGE);
   const { db, guildId } = ctx;
   const line = (s) =>
-    `**${s.name}**: <#${s.voice_channel_id}> → <#${s.transcript_channel_id}>` +
+    `**${s.name}**: <#${s.voice_channel_id}> → ${s.transcript_channel_id ? `<#${s.transcript_channel_id}>` : 'where the recording is started'}` +
     (s.backup_channel_id ? `, backup <#${s.backup_channel_id}>` : '') +
     `, language ${s.language}` +
     (s.glossary ? `, glossary: ${s.glossary.length > 80 ? `${s.glossary.slice(0, 77)}...` : s.glossary}` : '');

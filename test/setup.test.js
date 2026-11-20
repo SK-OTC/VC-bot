@@ -278,20 +278,20 @@ test('start-recording: only works for a channel that has been set up in THIS ser
   assert.match((await t.run(slash('start-recording', {}))).data.content, /not set up for recording yet/);
 });
 
-test('definitions: the three admin commands are limited to Manage Server by default, with the right channel kinds', () => {
+test('definitions: the four admin commands are limited to Manage Server by default, with the right channel kinds', () => {
   const by = (n) => COMMANDS.find((c) => c.name === n);
-  for (const n of ['setup-recording', 'recording-settings', 'remove-recording-setup']) {
+  for (const n of ['setup-recording', 'recording-settings', 'remove-recording-setup', 'transcript-settings']) {
     assert.equal(by(n).default_member_permissions, '32', n);
     assert.deepEqual(by(n).contexts, [0], n);
   }
   const opts = Object.fromEntries(by('setup-recording').options.map((o) => [o.name, o]));
   assert.deepEqual(Object.keys(opts), ['voice_channel', 'transcript_channel', 'name', 'backup_channel', 'language', 'glossary']);
-  assert.deepEqual([opts.voice_channel.required, opts.transcript_channel.required, !!opts.name.required], [true, true, false]);
+  assert.deepEqual([opts.voice_channel.required, !!opts.transcript_channel.required, !!opts.name.required], [true, false, false]); // the transcript channel is optional now
   assert.deepEqual(opts.voice_channel.channel_types, [2]);
   assert.deepEqual(opts.transcript_channel.channel_types, [0, 5]);
   assert.deepEqual(opts.backup_channel.channel_types, [0, 5]);
   assert.equal(opts.glossary.max_length, 500);
-  assert.ok(!COMMANDS.some((c) => c.name !== 'setup-recording' && c.name !== 'recording-settings' && c.name !== 'remove-recording-setup' && c.default_member_permissions), 'other commands stay open to everyone');
+  assert.ok(!COMMANDS.some((c) => !['setup-recording', 'recording-settings', 'remove-recording-setup', 'transcript-settings'].includes(c.name) && c.default_member_permissions), 'other commands stay open to everyone');
 });
 
 // ---------- the Worker endpoint the recorder calls ----------
@@ -317,7 +317,7 @@ test('config endpoint: needs the secret, returns only the session\'s own channel
   assert.equal(ok.status, 200);
   assert.equal(ok.headers.get('Cache-Control'), 'no-store');
   assert.deepEqual(await ok.json(), {
-    voice_channel_id: VC, guild_id: GUILD, name: 'Design', transcript_channel_id: TXT, backup_channel_id: BAK, glossary: 'Foo', language: 'fr',
+    voice_channel_id: VC, guild_id: GUILD, name: 'Design', transcript_channel_id: TXT, save: true, post: true, dm_user_id: null, backup_channel_id: BAK, glossary: 'Foo', language: 'fr',
   });
   for (const secret of [null, 'wrong', '']) assert.equal((await call('GET', '/api/sessions/sess1234/config', secret)).status, 401);
   assert.equal((await call('POST', '/api/sessions/sess1234/config')).status, 405);
@@ -331,12 +331,12 @@ test('config endpoint: needs the secret, returns only the session\'s own channel
 
 // ---------- the recorder side ----------
 
-const goodTeam = { voiceChannelId: VC, name: 'Design', transcriptChannelId: TXT, backupChannelId: '', glossary: 'Foo', language: 'en' };
+const goodTeam = { voiceChannelId: VC, name: 'Design', transcriptChannelId: TXT, save: true, post: true, dmUserId: '', backupChannelId: '', glossary: 'Foo', language: 'en' };
 const ENV = { DISCORD_TOKEN: 't', CHANNEL_ID: VC };
 
 test('parseSessionConfig: settings from the Worker win; TEAM_CONFIG is only the fallback', () => {
   const fromWorker = parseSessionConfig({ ...ENV, TEAM_CONFIG: 'not even json' }, goodTeam);
-  assert.deepEqual(fromWorker.team, { name: 'Design', transcriptChannelId: TXT, backupChannelId: '', glossary: 'Foo', language: 'en' });
+  assert.deepEqual(fromWorker.team, { name: 'Design', transcriptChannelId: TXT, save: true, post: true, dmUserId: '', backupChannelId: '', glossary: 'Foo', language: 'en' });
   const teamConfig = JSON.stringify({ [VC]: { name: 'FromSecret', transcriptChannelId: BAK } });
   assert.equal(parseSessionConfig({ ...ENV, TEAM_CONFIG: teamConfig }, goodTeam).team.name, 'Design');
   assert.equal(parseSessionConfig({ ...ENV, TEAM_CONFIG: teamConfig }, null).team.name, 'FromSecret');
@@ -405,7 +405,7 @@ test('contract: the recorder\'s fetchRemoteTeam and the Worker agree, end to end
   const remote = await fetchRemoteTeam(env, { fetchImpl });
   assert.equal(remote.found, true);
   const cfg = parseSessionConfig(env, remote.team); // no TEAM_CONFIG at all
-  assert.deepEqual(cfg.team, { name: 'Design team', transcriptChannelId: TXT, backupChannelId: '', glossary: 'LiteCut', language: 'en' });
+  assert.deepEqual(cfg.team, { name: 'Design team', transcriptChannelId: TXT, save: true, post: true, dmUserId: '', backupChannelId: '', glossary: 'LiteCut', language: 'en' });
   assert.equal(cfg.sessionId, 'sess1234');
 });
 

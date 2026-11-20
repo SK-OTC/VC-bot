@@ -18,6 +18,7 @@ import {
   updateMeeting,
 } from './store.js';
 import { allowedMentionsFor, reminderText, startText } from './messages.js';
+import { autoRecord } from './auto-record.js';
 
 export const GRACE_SEC = 600; // don't send a job that is more than 10 minutes late
 export const MAX_ATTEMPTS = 4;
@@ -49,7 +50,7 @@ async function afterStart(db, meeting, nowSec) {
   await replaceJobs(db, { ...meeting, start_at: next }, nowSec);
 }
 
-async function processJob({ db, discord, nowSec }, job, summary) {
+async function processJob({ db, discord, nowSec, recorder = null }, job, summary) {
   const finish = async (status, error = null, { advance = false, meeting = null } = {}) => {
     await finishJob(db, job.id, status, error);
     summary[status] = (summary[status] ?? 0) + 1;
@@ -67,6 +68,18 @@ async function processJob({ db, discord, nowSec }, job, summary) {
       return finish('failed', `${job.last_error} (gave up retrying: ${lateBy})`, { advance: true, meeting });
     }
     return finish('skipped', `too late to send (${lateBy})`, { advance: true, meeting });
+  }
+
+  // At the start time, record the meeting if its location is a link to a usable Discord voice channel. This never decides the job's
+  // outcome: the start message below is posted either way, and an error here is only logged (reason codes, never the location).
+  // A job that is only a little late still records (the lateness check above is the limit, 10 minutes).
+  if (job.kind === 'start') {
+    try {
+      const r = await autoRecord({ db, discord, recorder, meeting, fireAt: job.fire_at, nowSec });
+      console.log(`auto-record meeting ${meeting.id}: ${r.started ? 'started' : `not started (${r.reason})`}`);
+    } catch (e) {
+      console.error(`auto-record meeting ${meeting.id} failed unexpectedly: ${String(e?.name ?? 'Error')}`);
+    }
   }
 
   const content = job.kind === 'reminder' ? reminderText(meeting) : startText(meeting);
@@ -87,13 +100,13 @@ async function processJob({ db, discord, nowSec }, job, summary) {
 }
 
 /** Processes up to BATCH_SIZE due jobs. Never throws; returns a summary for logging. */
-export async function runDueJobs({ db, discord, nowSec }) {
+export async function runDueJobs({ db, discord, nowSec, recorder = null }) {
   const summary = { claimed: 0 };
   const jobs = await claimDueJobs(db, nowSec, BATCH_SIZE);
   summary.claimed = jobs.length;
   for (const job of jobs) {
     try {
-      await processJob({ db, discord, nowSec }, job, summary);
+      await processJob({ db, discord, nowSec, recorder }, job, summary);
     } catch (e) {
       // Unexpected error (e.g. database hiccup). Leave the job leased: it is re-claimed once
       // the lease expires, so it is retried rather than lost.

@@ -22,7 +22,10 @@ export function validateTranscriptPayload(body) {
 
   check('id', typeof body.id === 'string' && TRANSCRIPT_ID_RE.test(body.id));
   check('session_id', body.session_id === null || body.session_id === undefined || (typeof body.session_id === 'string' && SESSION_ID_RE.test(body.session_id)));
-  for (const f of ['guild_id', 'voice_channel_id', 'post_channel_id', 'transcript_message_id']) check(f, typeof body[f] === 'string' && ID_RE.test(body[f]));
+  // post_channel_id is the channel the transcript was posted to, or the voice channel's own id when posting was off.
+  // transcript_message_id is absent (or empty) when nothing was posted.
+  for (const f of ['guild_id', 'voice_channel_id', 'post_channel_id']) check(f, typeof body[f] === 'string' && ID_RE.test(body[f]));
+  check('transcript_message_id', body.transcript_message_id === null || body.transcript_message_id === undefined || body.transcript_message_id === '' || (typeof body.transcript_message_id === 'string' && ID_RE.test(body.transcript_message_id)));
   check('summary_message_id', body.summary_message_id === null || body.summary_message_id === undefined || (typeof body.summary_message_id === 'string' && ID_RE.test(body.summary_message_id)));
 
   const startedMs = typeof body.started_at === 'string' ? Date.parse(body.started_at) : NaN;
@@ -79,7 +82,7 @@ export function validateTranscriptPayload(body) {
       guild_id: body.guild_id,
       voice_channel_id: body.voice_channel_id,
       post_channel_id: body.post_channel_id,
-      transcript_message_id: body.transcript_message_id,
+      transcript_message_id: body.transcript_message_id || null,
       summary_message_id: body.summary_message_id || null,
       started_at: Math.floor(startedMs / 1000),
       duration_sec: body.duration_sec,

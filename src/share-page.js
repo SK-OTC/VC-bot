@@ -108,7 +108,7 @@ const CALENDAR = ICON('<rect x="2" y="3" width="12" height="11" rx="2"/><path d=
 const ARROW_UP = ICON('<path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/>').replace('width="14" height="14"', 'width="16" height="16"');
 
 const CSS = `
-:root{color-scheme:dark;--bg:#1b1b17;--panel:#161616;--line:#282824;--chip-line:#23231e;--text:#83837f;--title:#eeeeee;--hash:#32332f;--chip-text:#818481;--input-line:#262626;--placeholder:#818382;--send:#21211e;--suggest:#808386;--err:#ff8787}
+:root{color-scheme:dark;--bg:#1b1b17;--panel:#161616;--line:#282824;--chip-line:#23231e;--text:#83837f;--title:#eeeeee;--hash:#32332f;--chip-text:#818481;--input-line:#262626;--placeholder:#818382;--send:#21211e;--suggest:#808386;--err:#ff8787;--ok:#8fd19e}
 *{box-sizing:border-box}
 html,body{margin:0}
 body{background:var(--bg);color:var(--text);font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
@@ -173,6 +173,13 @@ textarea:focus-visible{outline:none}
   .loading span{animation:none;opacity:.6}
   .ask,.send,.suggest{transition:none}
 }
+.edit textarea{display:block;width:100%;min-height:18rem;max-height:none;field-sizing:fixed;border:1px solid var(--input-line);border-radius:12px;background:var(--panel);padding:.8rem 1rem;font-size:.9rem;line-height:1.5;color:var(--title);resize:vertical;transition:border-color .18s ease}
+.edit textarea:focus,.edit textarea:focus-visible{border-color:var(--chip-text);outline:none}
+.actions{display:flex;flex-wrap:wrap;gap:.6rem;margin:.8rem 0}
+.btn{font:inherit;font-size:.85rem;border-radius:999px;padding:.45rem 1.1rem;border:1px solid var(--input-line);background:var(--send);color:var(--title);cursor:pointer;transition:background-color .18s ease,color .18s ease,transform .12s ease}
+.btn:active{transform:scale(.97)}
+.btn.primary{background:var(--title);color:var(--bg);border-color:var(--title)}
+.ok{color:var(--ok);font-size:.9rem}
 .missing{max-width:30rem;margin:18vh auto 0;padding:0 24px}
 .missing h1{font-size:1.8rem}
 @media (max-width:900px){
@@ -219,9 +226,12 @@ export function transcriptPage(t, qa = { enabled: false }) {
     // no speaker list
   }
 
-  // The notes. summary_text already holds all four sections; the separate action items are only added if it lacks them.
-  let notes = t.summary_text ? renderNote(t.summary_text) : '';
-  if (t.actions_text && !/\*\*\s*Action items\s*\*\*/i.test(t.summary_text ?? '')) {
+  // The notes: a person's edit (made on the /admin page) if there is one, otherwise the generated summary. summary_text already
+  // holds all four sections; the separate action items are only added to a generated summary that lacks them (an edited one is
+  // shown exactly as edited).
+  const shown = t.summary_edited || t.summary_text;
+  let notes = shown ? renderNote(shown) : '';
+  if (!t.summary_edited && t.actions_text && !/\*\*\s*Action items\s*\*\*/i.test(t.summary_text ?? '')) {
     notes += renderNote(`**Action items**\n${t.actions_text}`);
   }
   if (!notes) notes = '<p>No summary is available for this meeting.</p>';
@@ -254,4 +264,28 @@ export function transcriptPage(t, qa = { enabled: false }) {
     `<textarea id="q" name="q" rows="1" maxlength="${max}" required placeholder="Ask about the meeting...">${esc(qa.error ? qa.question ?? '' : '')}</textarea>` +
     `<button class="send" type="submit" aria-label="Ask">${ARROW_UP}</button></form></div></aside><script>${CHAT_SCRIPT}</script>`;
   return shell('Meeting summary', `<div class="layout">${note}${chat}</div>`);
+}
+
+/**
+ * The /admin page: edit the summary's text (names, bullets, headings). The transcript is not shown and cannot be edited here.
+ * opts: { notice?, error?, draft? } — `notice` and `error` are our own fixed messages; `draft` is what the person typed, put back
+ * in the box (escaped) when it was refused. Nothing here needs a script: both buttons are ordinary form posts to this same address.
+ */
+export function adminPage(t, { notice = null, error = null, draft = null, max = 30_000 } = {}) {
+  const current = draft ?? t.summary_edited ?? t.summary_text ?? '';
+  const edited = Boolean(t.summary_edited);
+  const body =
+    '<div class="layout solo"><main class="note"><div class="article edit">' +
+    '<h1>Edit the summary</h1>' +
+    `<p class="fine" style="margin-top:0">Anyone who has this link can change the summary here, so only share it with people you trust. The transcript itself cannot be edited. ${edited ? 'This summary has been edited; the generated one can be restored below.' : 'This is the generated summary.'}</p>` +
+    (notice ? `<p class="ok" role="status">${esc(notice)}</p>` : '') +
+    (error ? `<p class="err" role="alert">${esc(error)}</p>` : '') +
+    '<form method="post" autocomplete="off"><label class="sr" for="summary">Summary</label>' +
+    // the first newline after <textarea> is dropped by HTML parsing, so one is added to keep a leading blank line intact
+    `<textarea id="summary" name="summary" rows="24" maxlength="${Number(max)}" required>\n${esc(current)}</textarea>` +
+    '<div class="actions"><button class="btn primary" type="submit">Save changes</button></div></form>' +
+    (edited ? '<form method="post"><div class="actions"><button class="btn" type="submit" name="restore" value="1">Restore the generated summary</button></div></form>' : '') +
+    '<p class="fine">A line that is only **bold text** is a heading. Lines starting with "- " are bullets (indent by two spaces for a sub-bullet). [hh:mm:ss] marks a time. To see the page as readers do, remove /admin from the address.</p>' +
+    '</div></main></div>';
+  return shell('Edit the summary', body);
 }

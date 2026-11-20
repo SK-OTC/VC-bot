@@ -2,18 +2,13 @@
 // connection itself); stopping sets the flag the recorder checks every 15 seconds, so it leaves, then transcribes.
 import { MessageFlags, ResponseType } from './discord.js';
 import { canManageOwner, fail, reply } from './replies.js';
-import { createSession, endSession, failStaleSessions, findLiveSessions, getRecordingSetup, requestStop } from './recording-store.js';
+import { endSession, failStaleSessions, findLiveSessions, getRecordingSetup, getTranscriptSettings, requestStop } from './recording-store.js';
+import { launchSession, openSession } from './recording-start.js';
 
 const SNOWFLAKE_RE = /^\d{17,20}$/;
-const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 export const RECORDING_NOT_ENABLED =
   'Recording is not set up on this bot yet. The bot owner needs to set the `GITHUB_DISPATCH_TOKEN` secret and `GITHUB_REPO` on the Worker (see the README).';
-
-function newSessionId() {
-  const bytes = crypto.getRandomValues(new Uint8Array(12));
-  return Array.from(bytes, (b) => ID_CHARS[b % ID_CHARS.length]).join('');
-}
 
 const stillLive = (live) => live.map((s) => `<#${s.voice_channel_id}>`).join(', ');
 
@@ -34,28 +29,35 @@ export async function cmdStartRecording(ctx, o) {
 
   // A voice channel can only be recorded after an admin has said where its transcript goes (/setup-recording). This also
   // stops anyone starting a recording in a channel the team never agreed to record.
-  if (!(await getRecordingSetup(db, channelId, guildId))) {
+  const setup = await getRecordingSetup(db, channelId, guildId);
+  if (!setup) {
     return fail(`<#${channelId}> is not set up for recording yet. A server admin can set it up with \`/setup-recording\`.`);
   }
 
-  await failStaleSessions(db, guildId, nowSec);
-  const id = newSessionId();
-  const made = await createSession(db, { id, channelId, guildId, startedBy: userId }, nowSec);
+  // The channel where this command was typed is where the transcript goes, unless /transcript-settings or the voice channel's
+  // setup names another one (see resolveTranscriptTarget).
+  const made = await openSession(db, { channelId, guildId, startedBy: userId, startChannelId: interaction.channel_id ?? null }, nowSec);
   if (made.conflict) {
     return fail(`<#${channelId}> is already being recorded. End that recording with \`/stop-recording\` first.`);
   }
+  const id = made.id;
+  const settings = await getTranscriptSettings(db, guildId);
+  const whereResults = !settings.post
+    ? 'Nothing is posted to a channel: the summary link is sent to you in a private message.'
+    : settings.destination
+      ? `The transcript and summary go to <#${settings.destination}>`
+      : setup.transcript_channel_id
+        ? `The transcript and summary go to <#${setup.transcript_channel_id}>`
+        : `The transcript and summary go to ${interaction.channel_id ? `<#${interaction.channel_id}>` : 'this channel'}`;
 
   const run = async () => {
-    const r = await recorder.dispatch({ channel_id: channelId, session_id: id });
-    if (!r.ok) {
-      await endSession(db, id, 'failed', `could not start: ${r.error}`, nowSec);
-      return `I couldn't start the recording: ${r.error}.`;
-    }
+    const r = await launchSession(db, recorder, { id, channelId }, nowSec);
+    if (!r.ok) return `I couldn't start the recording: ${r.error}.`;
     return (
       `Starting a recording of <#${channelId}>. The bot should join within about a minute (GitHub has to start a machine), ` +
       'rename itself `[REC] …` and post a notice in the channel. Once it is in, talk as usual. ' +
       'It leaves when everyone has left, after a long silence, at the time limit, or when you run `/stop-recording`. ' +
-      "The transcript and summary go to your team's transcript channel a few minutes after it leaves."
+      `${whereResults.replace(/\.$/, '')} a few minutes after it leaves.`
     );
   };
 

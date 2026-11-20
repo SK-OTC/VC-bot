@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { silenceFramesNeeded, AlignedTrack, overlapSeconds } from '../track.mjs';
+import { silenceFramesNeeded, AlignedTrack, overlapSeconds } from '../recorder/track.mjs';
 
 test('silenceFramesNeeded: no padding for normal 20 ms cadence or small jitter', () => {
   assert.equal(silenceFramesNeeded({ nowMs: 1020, startMs: 0, written: 50 }), 0);

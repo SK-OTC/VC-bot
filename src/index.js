@@ -109,7 +109,7 @@ Please try again. If it keeps happening, tell the server admin.`,
       (async () => {
         // Reminders are time-critical, so they run first; each step has its own try/catch so one cannot block the other.
         try {
-          const summary = await runDueJobs({ db: env.DB, discord, nowSec });
+          const summary = await runDueJobs({ db: env.DB, discord, nowSec, recorder: makeRecorder(env) });
           if (summary.claimed) console.log('scheduler:', JSON.stringify(summary));
         } catch (e) {
           console.error('scheduler failed:', e?.stack ?? e);

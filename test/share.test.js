@@ -1,11 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
-import { handleInteraction } from '../src/commands.js';
-import { createFakeDiscord, createTestDb } from './helpers/d1.js';
+import { createTestDb } from './helpers/d1.js';
 import { esc, transcriptPage, SECURITY_HEADERS } from '../src/share-page.js';
 import {
-  MAX_ACTIVE_PER_TRANSCRIPT, TOKEN_RE, configuredDays, createShareLink, hashToken, newToken, publicOrigin, revokeLinks,
+  MAX_ACTIVE_PER_TRANSCRIPT, TOKEN_RE, configuredDays, createShareLink, hashToken, newToken, publicOrigin,
 } from '../src/share-store.js';
 import { uploadTranscript } from '../pipeline/upload.mjs';
 
@@ -14,7 +13,6 @@ const NOW = Math.floor(Date.UTC(2026, 10, 19, 12, 0, 0) / 1000);
 const DAY = 86_400;
 const GUILD = '222222222222222222';
 const POST = '333333333333333333'; // the private transcript channel
-const OTHER = '999999999999999999';
 const VC = '111111111111111111';
 const ALICE = '700000000000000001';
 
@@ -292,8 +290,8 @@ test('at most 10 active links per transcript', async () => {
   for (let i = 0; i < MAX_ACTIVE_PER_TRANSCRIPT - 1; i++) assert.equal((await createShareLink(t.db, { transcriptId: 'abc234', createdBy: ALICE, days: 5 }, NOW)).ok, true);
   const over = await createShareLink(t.db, { transcriptId: 'abc234', createdBy: ALICE, days: 5 }, NOW);
   assert.equal(over.ok, false);
-  assert.match(over.reason, /unshare-transcript/);
-  assert.equal(await revokeLinks(t.db, 'abc234', NOW), 10);
+  assert.match(over.reason, /already has 10 active links/);
+  t.db.sql(`UPDATE share_links SET revoked_at = ${NOW} WHERE transcript_id = 'abc234'`); // a revoked link no longer counts
   assert.equal((await createShareLink(t.db, { transcriptId: 'abc234', createdBy: ALICE, days: 5 }, NOW)).ok, true);
 });
 
@@ -312,85 +310,6 @@ test('a link opens only its own transcript', async () => {
   const pb = await (await t.get(new URL(b.share_url).pathname)).text();
   assert.ok(pa.includes('ALPHA') && !pa.includes('BRAVO'));
   assert.ok(pb.includes('BRAVO') && !pb.includes('ALPHA'));
-});
-
-// ---------- /share-transcript and /unshare-transcript ----------
-
-function commands(envExtra = {}) {
-  const t = setup(envExtra);
-  const discord = createFakeDiscord();
-  const run = (name, opts = {}, { channel = POST, user = ALICE, guild = GUILD } = {}) =>
-    handleInteraction(
-      {
-        type: 2,
-        guild_id: guild,
-        channel_id: channel,
-        member: { user: { id: user }, permissions: '0' },
-        data: { name, options: Object.entries(opts).map(([n, v]) => ({ name: n, value: v, type: typeof v === 'number' ? 4 : 3 })) },
-      },
-      { db: t.db, discord, nowSec: NOW, env: t.env, origin: 'https://worker.example' },
-    );
-  return { ...t, run };
-}
-const isPrivate = (r) => (r.data.flags & 64) === 64;
-const linkIn = (content) => /<(https:\/\/[^>]+\/t\/[A-Za-z0-9_-]{43})>/.exec(content)?.[1];
-
-test('/share-transcript: makes a working private link, only visible to the person who asked', async () => {
-  const t = commands();
-  await stored(t);
-  const r = await t.run('share-transcript');
-  assert.ok(isPrivate(r));
-  const url = linkIn(r.data.content);
-  assert.ok(url);
-  assert.match(r.data.content, new RegExp(`<t:${NOW + 30 * DAY}:D>`));
-  assert.equal((await t.get(new URL(url).pathname)).status, 200);
-  assert.equal(t.db.sql("SELECT COUNT(*) AS n FROM share_links WHERE created_by = ?", ALICE)[0].n, 1);
-});
-
-test('/share-transcript: days is honoured and validated', async () => {
-  const t = commands();
-  await stored(t);
-  const r = await t.run('share-transcript', { days: 3 });
-  assert.match(r.data.content, new RegExp(`<t:${NOW + 3 * DAY}:D>`));
-  for (const bad of [0, 366, -5, 2.5]) assert.match((await t.run('share-transcript', { days: bad })).data.content, /whole number from 1 to 365/);
-});
-
-test('/share-transcript: only works in the transcript\'s own channel and server, by ID or latest', async () => {
-  const t = commands();
-  await stored(t, { id: 'aaaaaa', started_at: '2026-11-18T10:00:00.000Z' });
-  await stored(t, { id: 'bbbbbb', started_at: '2026-11-19T10:00:00.000Z' });
-
-  assert.match((await t.run('share-transcript', {}, { channel: OTHER })).data.content, /can't find a transcript for this channel/);
-  assert.match((await t.run('share-transcript', {}, { guild: '888888888888888888' })).data.content, /can't find a transcript/);
-  assert.match((await t.run('share-transcript', { id: 'aaaaaa' }, { channel: OTHER })).data.content, /can't find a transcript with ID/);
-
-  const latest = await t.run('share-transcript');
-  assert.match(latest.data.content, /`bbbbbb`/);
-  const byId = await t.run('share-transcript', { id: ' AAAAAA ' });
-  assert.match(byId.data.content, /`aaaaaa`/);
-  assert.match((await t.run('share-transcript', { id: 'nope!' })).data.content, /not a transcript ID/);
-  assert.match((await t.run('share-transcript', { id: 'zzzzzz' })).data.content, /can't find a transcript with ID/);
-});
-
-test('/share-transcript uses PUBLIC_URL when it is set', async () => {
-  const t = commands({ PUBLIC_URL: 'https://meetings.example.com' });
-  await stored(t);
-  assert.match(linkIn((await t.run('share-transcript')).data.content) ?? '', /^https:\/\/meetings\.example\.com\/t\//);
-});
-
-test('/unshare-transcript: turns every link off, including the automatic one, and says how many', async () => {
-  const t = commands();
-  const auto = await stored(t);
-  const manual = linkIn((await t.run('share-transcript')).data.content);
-  const r = await t.run('unshare-transcript');
-  assert.ok(isPrivate(r));
-  assert.match(r.data.content, /Turned off 2 links/);
-  assert.equal((await t.get(new URL(auto.share_url).pathname)).status, 404);
-  assert.equal((await t.get(new URL(manual).pathname)).status, 404);
-  assert.match((await t.run('unshare-transcript')).data.content, /no active links/);
-  assert.match((await t.run('unshare-transcript', {}, { channel: OTHER })).data.content, /can't find a transcript/);
-  // a new link can be made afterwards
-  assert.ok(linkIn((await t.run('share-transcript')).data.content));
 });
 
 // ---------- the recorder side ----------

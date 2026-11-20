@@ -17,11 +17,11 @@ export const FALLBACK_SUFFIX = '\nDo not add information that is not in the tran
 
 const LINE_FORMAT = 'Each transcript line looks like "[hh:mm:ss] Name: what they said".';
 
-const GROUNDING = `Use ONLY what is in the transcript. Never invent owners, deadlines, numbers or names. Keep speakers' names exactly as they are written in the transcript. The transcript is automatic and may contain mistakes, so do not draw conclusions from unclear lines. Be complete: include every decision and every action item that is clearly stated, even small ones. Do not guess when something is unclear: leave it out or mark the owner "Unassigned".`;
+const GROUNDING = `Use ONLY the transcript. Never invent owners, deadlines, numbers or names; spell speakers' names as in the transcript. The transcript is automatic and may be wrong: leave out anything unclear. Include every clearly stated decision and action item, even small ones.`;
 
-const ACTION_RULE = `An action item is written as: Owner: task [hh:mm:ss]. The owner is a speaker's name exactly as it appears in the transcript. If no owner is clear, write "Unassigned" as the owner. Write a due date only if one was actually said.`;
+const ACTION_RULE = `Action items: "Owner: task [hh:mm:ss]". The owner is a speaker's name exactly as it appears in the transcript, or "Unassigned" if no owner is clear. Add a due date only if one was actually said.`;
 
-const FINAL_FORMAT = `Write the result in plain text, in exactly this format with these four bold headings. EVERY bullet must end with the [hh:mm:ss] timestamp of the transcript line it came from.
+const FINAL_FORMAT = `Write plain text in exactly this format, with these four bold headings. EVERY bullet ends with the [hh:mm:ss] of the transcript line it came from.
 
 **Summary**
 - 4 to 8 short bullets: the topics discussed and what was concluded [hh:mm:ss]
@@ -45,13 +45,13 @@ export const singleSystem = ({ glossary = '' } = {}) =>
 
 export const mapSystem = ({ glossary = '' } = {}) =>
   `You are reading ONE PART of a longer meeting transcript. ${LINE_FORMAT}${glossaryLine(glossary)}
-Write terse bullet notes in exactly these four lists, in this order: TOPICS, DECISIONS, ACTION ITEMS, OPEN QUESTIONS.
-Every item in every list must end with the [hh:mm:ss] of the transcript line it came from. Write "none" under a list if it has nothing.
+Write terse bullet notes in exactly these four lists, in this order: TOPICS, DECISIONS, ACTION ITEMS, OPEN QUESTIONS ("none" under an empty list).
+Every item ends with the [hh:mm:ss] of the transcript line it came from.
 ${ACTION_RULE}
 ${GROUNDING} Use only this part.`;
 
 export const reduceSystem = ({ glossary = '' } = {}) =>
-  `You are given notes taken from consecutive parts of one meeting. Combine them into the final meeting notes. Merge duplicates. Do not drop any action item from the chunk notes: every action item in the notes must appear in the result with its [hh:mm:ss] timestamp.${glossaryLine(glossary)}\n\n${FINAL_FORMAT}`;
+  `You are given notes from consecutive parts of one meeting. Combine them into the final meeting notes and merge duplicates. Do not drop any action item from the chunk notes: each must appear in the result with its [hh:mm:ss] timestamp.${glossaryLine(glossary)}\n\n${FINAL_FORMAT}`;
 
 export const mergeNotesSystem = ({ glossary = '' } = {}) =>
-  `You are given notes taken from consecutive parts of one meeting. Merge them into one shorter set of notes using the same four lists (TOPICS, DECISIONS, ACTION ITEMS, OPEN QUESTIONS). Merge duplicates. Do not drop any action item: keep every action item with its owner, due date and [hh:mm:ss] timestamp. Every item keeps its [hh:mm:ss] timestamp.${glossaryLine(glossary)}\n${ACTION_RULE}\n${GROUNDING}`;
+  `You are given notes from consecutive parts of one meeting. Merge them into one shorter set of notes using the same four lists (TOPICS, DECISIONS, ACTION ITEMS, OPEN QUESTIONS) and merge duplicates. Do not drop any action item: keep its owner, due date and timestamp. Every item keeps its [hh:mm:ss] timestamp.${glossaryLine(glossary)}\n${ACTION_RULE}\n${GROUNDING}`;

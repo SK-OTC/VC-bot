@@ -104,7 +104,7 @@ test('Discord interactions still need a valid signature (the old path is unchang
   assert.ok(env.DB);
 });
 
-// ---------- GET /api/sessions/<id>/stop (what record.mjs polls) ----------
+// ---------- GET /api/sessions/<id>/stop (what recorder/record.mjs polls) ----------
 
 test('stop: unknown or malformed session ids answer {stop:false}', async () => {
   const { call } = setup();
@@ -313,11 +313,11 @@ test('contract: pipeline/upload.mjs (what session.mjs uses) and the Worker agree
   }
 });
 
-test('contract: record.mjs stop polling URL and answer shape', async () => {
+test('contract: recorder/record.mjs stop polling URL and answer shape', async () => {
   const { call, db } = setup();
   await addSession(db, 'sess1234', 'starting');
   db.sql("UPDATE recording_sessions SET stop_flag = 1 WHERE id = 'sess1234'");
-  // record.mjs calls: GET <WORKER_URL>/api/sessions/<encodeURIComponent(id)>/stop with a Bearer header and reads `.stop === true`
+  // recorder/record.mjs calls: GET <WORKER_URL>/api/sessions/<encodeURIComponent(id)>/stop with a Bearer header and reads `.stop === true`
   const r = await call('GET', `/api/sessions/${encodeURIComponent('sess1234')}/stop`);
   assert.equal((await r.json()).stop, true);
 });

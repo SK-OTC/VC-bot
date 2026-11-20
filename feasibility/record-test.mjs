@@ -14,7 +14,7 @@ import { mkdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseConfig, verdict, logSummary, discordReport } from './lib.mjs';
-import { AlignedTrack, overlapSeconds } from './track.mjs';
+import { AlignedTrack, overlapSeconds } from '../recorder/track.mjs';
 
 const log = (msg) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);
 const OUT_DIR = process.env.OUT_DIR || 'recordings';

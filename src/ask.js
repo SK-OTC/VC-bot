@@ -225,7 +225,7 @@ export function joinContext(pieces) {
 export const NOT_IN_TRANSCRIPT = 'Not in this transcript.';
 
 const SYSTEM_PROMPT = [
-  'You answer questions about one recorded meeting, using only the transcript excerpts and summary given to you.',
+  'You answer questions about one recorded meeting from the transcript excerpts given to you. The summary may have been corrected by a person: use its spelling of names, but take facts only from the excerpts.',
   'Rules:',
   '- Answer only from the excerpts. Cite the [hh:mm:ss] timestamp for every claim you make. If you cannot cite a timestamp for a claim, do not make it. Never guess or use outside knowledge.',
   `- If the excerpts do not answer the question, reply with exactly: ${NOT_IN_TRANSCRIPT}`,

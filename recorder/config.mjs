@@ -45,8 +45,12 @@ export function parseSessionConfig(env, remote = null) {
   if (!team && ID_RE.test(channelId)) {
     problems.push('There are no recording settings for this voice channel (no /setup-recording from the Worker, and TEAM_CONFIG has no entry for it), so the bot does not know where to post');
   }
+  // save / post come from /transcript-settings (default: both on). A hand-run with TEAM_CONFIG always saves and posts.
+  const save = team ? team.save !== false : true;
+  const post = team ? team.post !== false : true;
   if (team) {
-    if (!ID_RE.test(String(team.transcriptChannelId ?? ''))) problems.push('TEAM_CONFIG entry needs transcriptChannelId');
+    if (!save && !post) problems.push('saving and posting are both off, so the transcript would be thrown away (change it with /transcript-settings)');
+    if (post && !ID_RE.test(String(team.transcriptChannelId ?? ''))) problems.push('there is no channel to post the transcript in (TEAM_CONFIG entry needs transcriptChannelId, or start the recording with /start-recording)');
     if (team.backupChannelId && !ID_RE.test(String(team.backupChannelId))) problems.push('backupChannelId must be a channel ID');
     if (team.backupChannelId && team.backupChannelId === team.transcriptChannelId) problems.push('backupChannelId must be a different channel from transcriptChannelId');
   }
@@ -72,7 +76,10 @@ export function parseSessionConfig(env, remote = null) {
     sessionId,
     team: {
       name: String(team.name || 'Team'),
-      transcriptChannelId: String(team.transcriptChannelId),
+      transcriptChannelId: post ? String(team.transcriptChannelId) : '',
+      save,
+      post,
+      dmUserId: /^\d{17,20}$/.test(String(team.dmUserId ?? '')) ? String(team.dmUserId) : '',
       backupChannelId: team.backupChannelId ? String(team.backupChannelId) : '',
       glossary: String(team.glossary || ''),
       language: String(team.language || 'en'),

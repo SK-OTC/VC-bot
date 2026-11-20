@@ -54,19 +54,24 @@ export async function findLiveSessions(db, guildId, channelId = null) {
 }
 
 /** Creates a session. { ok: false, conflict: true } when that voice channel already has a live one. */
-export async function createSession(db, { id, channelId, guildId, startedBy, meetingId = null }, nowSec) {
+export async function createSession(db, { id, channelId, guildId, startedBy, meetingId = null, startChannelId = null }, nowSec) {
   try {
     await db
       .prepare(
-        'INSERT INTO recording_sessions (id, voice_channel_id, guild_id, started_by, meeting_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO recording_sessions (id, voice_channel_id, guild_id, started_by, meeting_id, start_channel_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
-      .bind(id, channelId, guildId, startedBy, meetingId, 'starting', nowSec, nowSec)
+      .bind(id, channelId, guildId, startedBy, meetingId, startChannelId, 'starting', nowSec, nowSec)
       .run();
     return { ok: true };
   } catch (e) {
     if (/UNIQUE constraint failed/i.test(String(e?.message ?? ''))) return { ok: false, conflict: true };
     throw e;
   }
+}
+
+/** The session already made for one occurrence of a scheduled meeting (created at or after `sinceSec`), or null. */
+export async function findSessionForMeeting(db, meetingId, sinceSec) {
+  return (await db.prepare('SELECT * FROM recording_sessions WHERE meeting_id = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 1').bind(meetingId, sinceSec).first()) ?? null;
 }
 
 /** Asks the recorder to stop. It sees the flag on its next 15 second check. */
@@ -116,9 +121,73 @@ export async function saveRecordingSetup(db, s, nowSec) {
        ON CONFLICT (voice_channel_id) DO UPDATE SET name = excluded.name, transcript_channel_id = excluded.transcript_channel_id,
          backup_channel_id = excluded.backup_channel_id, glossary = excluded.glossary, language = excluded.language, updated_at = excluded.updated_at`,
     )
-    .bind(s.voiceChannelId, s.guildId, s.name, s.transcriptChannelId, s.backupChannelId ?? null, s.glossary ?? '', s.language ?? 'en', s.createdBy, existing?.created_at ?? nowSec, nowSec)
+    .bind(s.voiceChannelId, s.guildId, s.name, s.transcriptChannelId ?? null, s.backupChannelId ?? null, s.glossary ?? '', s.language ?? 'en', s.createdBy, existing?.created_at ?? nowSec, nowSec)
     .run();
   return { ok: true, updated: Boolean(existing) };
+}
+
+// ---------- transcript settings (/transcript-settings) ----------
+
+export const DEFAULT_TRANSCRIPT_SETTINGS = { save: true, post: true, destination: null, custom: false };
+
+/** The server's settings, or the defaults (save on, post on, post where the recording was started). */
+export async function getTranscriptSettings(db, guildId) {
+  const row = await db.prepare('SELECT save, post, destination_channel_id FROM transcript_settings WHERE guild_id = ?').bind(guildId).first();
+  if (!row) return { ...DEFAULT_TRANSCRIPT_SETTINGS };
+  return { save: row.save === 1, post: row.post === 1, destination: row.destination_channel_id ?? null, custom: true };
+}
+
+export async function saveTranscriptSettings(db, guildId, s, userId, nowSec) {
+  await db
+    .prepare(
+      `INSERT INTO transcript_settings (guild_id, save, post, destination_channel_id, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (guild_id) DO UPDATE SET save = excluded.save, post = excluded.post, destination_channel_id = excluded.destination_channel_id,
+         updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+    )
+    .bind(guildId, s.save ? 1 : 0, s.post ? 1 : 0, s.destination ?? null, String(userId), nowSec)
+    .run();
+}
+
+/**
+ * Where a recording's results go. Pure: the setting, the voice channel's setup and the session decide.
+ *   post off                  -> nothing is posted to a channel
+ *   post on, a destination    -> that channel (set with /transcript-settings)
+ *   post on, no destination   -> the transcript channel of the voice channel's /setup-recording if it has one (older setups),
+ *                                otherwise the channel where the recording was started
+ */
+export function resolveTranscriptTarget({ settings, setup, session }) {
+  const post = settings.post;
+  return {
+    save: settings.save,
+    post,
+    channelId: post ? settings.destination || setup?.transcript_channel_id || session?.start_channel_id || null : null,
+  };
+}
+
+// ---------- summary edits (/t/<token>/admin) ----------
+
+export const MAX_SUMMARY_EDIT_CHARS = 30_000;
+
+/** The text from the edit form, made safe to keep: { ok: true, text } or { ok: false, reason } (a fixed message, never the text). */
+export function cleanSummaryEdit(raw) {
+  let out = '';
+  for (const ch of String(raw ?? '').replace(/\r\n?/g, '\n')) {
+    const c = ch.codePointAt(0);
+    out += c < 32 && c !== 10 && c !== 9 ? ' ' : c === 127 ? ' ' : ch; // control characters become spaces; newlines and tabs stay
+  }
+  const text = out.trim();
+  if (!text) return { ok: false, reason: 'The summary cannot be empty. To go back to the generated one, use "Restore the generated summary".' };
+  if (text.length > MAX_SUMMARY_EDIT_CHARS) return { ok: false, reason: `The summary is too long (the limit is ${MAX_SUMMARY_EDIT_CHARS} characters).` };
+  return { ok: true, text };
+}
+
+export async function saveSummaryEdit(db, transcriptId, text, nowSec) {
+  await db.prepare('UPDATE transcripts SET summary_edited = ?, summary_edited_at = ? WHERE id = ?').bind(text, nowSec, transcriptId).run();
+}
+
+/** Goes back to the generated summary. */
+export async function clearSummaryEdit(db, transcriptId) {
+  await db.prepare('UPDATE transcripts SET summary_edited = NULL, summary_edited_at = NULL WHERE id = ?').bind(transcriptId).run();
 }
 
 export async function deleteRecordingSetup(db, voiceChannelId, guildId) {
@@ -153,7 +222,7 @@ export async function saveTranscript(db, t, nowSec) {
         t.guild_id,
         t.voice_channel_id,
         t.post_channel_id,
-        t.transcript_message_id,
+        t.transcript_message_id ?? '', // '' = the transcript was not posted to a channel (post off)
         t.summary_message_id,
         t.started_at,
         t.duration_sec,

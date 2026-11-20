@@ -2,16 +2,19 @@
 // with its normal handling (the health check and the signed Discord interactions).
 //   /api/...        recorder endpoints (own secret)
 //   /t/<token>      a private meeting page: summary plus "ask a question" (the token in the address is the only key)
+//   /t/<token>/admin  edit the summary's text (the same key; no other sign-in). The transcript is never editable.
 //   /robots.txt     tells well-behaved crawlers to stay away from everything
 import { handleApi } from './api.js';
 import { MAX_QUESTION_CHARS, answerQuestion, buildMessages, cleanQuestion, joinContext, questionLimits, questionsEnabled, selectContext, takeQuestionSlot, usableQaProviders } from './ask.js';
 import { neuronsToday, softCaps } from './meter.js';
 import { secondsUntilMidnightUtc } from './neurons.js';
 import { embedIfDue, semanticHits } from './semantic.js';
-import { SECURITY_HEADERS, notFoundPage, transcriptPage } from './share-page.js';
+import { cleanSummaryEdit, clearSummaryEdit, saveSummaryEdit } from './recording-store.js';
+import { SECURITY_HEADERS, adminPage, notFoundPage, transcriptPage } from './share-page.js';
 import { TOKEN_RE, findSharedTranscript, recordView } from './share-store.js';
 
 const MAX_FORM_BYTES = 8192;
+const MAX_ADMIN_FORM_BYTES = 300_000; // 30,000 characters, up to 9 bytes each once form-encoded, plus the field name
 const page = (html, status = 200, extra = {}) => new Response(html, { status, headers: { ...SECURITY_HEADERS, ...extra } });
 const plain = (status, text) => new Response(text, { status, headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' } });
 
@@ -30,7 +33,9 @@ async function handleShare(request, env, ctx, url, nowSec) {
   if (method !== 'GET' && method !== 'HEAD' && method !== 'POST') {
     return new Response('Method Not Allowed', { status: 405, headers: { ...SECURITY_HEADERS, Allow: 'GET, HEAD, POST' } });
   }
-  const token = url.pathname.slice('/t/'.length);
+  const rest = url.pathname.slice('/t/'.length);
+  const isAdmin = rest.endsWith('/admin');
+  const token = isAdmin ? rest.slice(0, -'/admin'.length) : rest;
   // Anything that is not exactly a token (wrong length, extra path, odd characters) is the same plain "not available".
   if (!TOKEN_RE.test(token)) return page(notFoundPage(), 404);
   if (!env.DB) {
@@ -41,6 +46,7 @@ async function handleShare(request, env, ctx, url, nowSec) {
     const t = await findSharedTranscript(env.DB, token, nowSec);
     if (!t) return page(notFoundPage(), 404);
     const enabled = questionsEnabled(env);
+    if (isAdmin) return await handleAdmin(request, env, url, nowSec, t);
     const view = (qa = {}) => transcriptPage(t, { enabled, maxChars: MAX_QUESTION_CHARS, ...qa });
 
     if (method === 'POST') return await handleQuestion(request, env, ctx, url, nowSec, t, enabled, view);
@@ -76,6 +82,35 @@ export function isOwnPost(headers, ownOrigin) {
   return origin === ownOrigin;
 }
 
+/**
+ * /t/<token>/admin: edit the summary text. The token in the address is the only key (there is no other sign-in), so whoever
+ * has the link can edit. What keeps that contained: the generated summary is never overwritten (an edit is stored beside it and
+ * can be undone), the transcript has no editing route at all, the form only works from this page (Origin / Sec-Fetch-Site),
+ * and everything shown is escaped.
+ */
+async function handleAdmin(request, env, url, nowSec, t) {
+  if (request.method === 'POST') {
+    if (!isOwnPost(request.headers, url.origin)) return plain(403, 'Forbidden');
+    if (!/^application\/x-www-form-urlencoded\b/i.test(request.headers.get('Content-Type') ?? '')) return plain(415, 'Unsupported Media Type');
+    const declared = Number(request.headers.get('Content-Length'));
+    if (Number.isFinite(declared) && declared > MAX_ADMIN_FORM_BYTES) return plain(413, 'Payload Too Large');
+    const body = await request.text();
+    if (body.length > MAX_ADMIN_FORM_BYTES) return plain(413, 'Payload Too Large');
+    const form = new URLSearchParams(body);
+    const back = (flag) => new Response(null, { status: 303, headers: { ...SECURITY_HEADERS, Location: `${url.pathname}?${flag}=1` } });
+    if (form.has('restore')) {
+      await clearSummaryEdit(env.DB, t.id);
+      return back('restored');
+    }
+    const cleaned = cleanSummaryEdit(form.get('summary'));
+    if (!cleaned.ok) return page(adminPage(t, { error: cleaned.reason, draft: form.get('summary') ?? '' }), 400);
+    await saveSummaryEdit(env.DB, t.id, cleaned.text, nowSec);
+    return back('saved');
+  }
+  const notice = url.searchParams.get('saved') === '1' ? 'Saved.' : url.searchParams.get('restored') === '1' ? 'Restored the generated summary.' : null;
+  return page(adminPage(t, { notice }));
+}
+
 async function handleQuestion(request, env, ctx, url, nowSec, t, enabled, view) {
   if (!isOwnPost(request.headers, url.origin)) return plain(403, 'Forbidden');
   if (!enabled) return page(view());
@@ -106,7 +141,7 @@ async function handleQuestion(request, env, ctx, url, nowSec, t, enabled, view) 
   else if (ctx?.waitUntil) ctx.waitUntil(embedIfDue(env, t.id, nowSec));
   const pieces = await selectContext(env.DB, t.id, asked.question, { semantic });
   if (!pieces.length) return page(view({ question: asked.question, error: MESSAGES.nothing }), 404);
-  const result = await answerQuestion(env, buildMessages({ summary: t.summary_text, actions: t.actions_text, excerpts: joinContext(pieces), question: asked.question }), nowSec);
+  const result = await answerQuestion(env, buildMessages({ summary: t.summary_edited || t.summary_text, actions: t.summary_edited ? null : t.actions_text, excerpts: joinContext(pieces), question: asked.question }), nowSec);
   if (!result.ok) {
     const busy = result.reason === 'busy';
     return page(view({ question: asked.question, error: busy ? MESSAGES.modelBusy : MESSAGES.modelDown }), busy ? 429 : 503, busy ? { 'Retry-After': '60' } : {});

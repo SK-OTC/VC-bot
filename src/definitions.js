@@ -185,7 +185,7 @@ export const COMMANDS = [
     default_member_permissions: MANAGE_SERVER,
     options: [
       opt(T.CHANNEL, 'voice_channel', 'The voice channel to record', { required: true, channel_types: VOICE_ONLY }),
-      opt(T.CHANNEL, 'transcript_channel', 'Private text channel for the transcript and summary', { required: true, channel_types: TEXT_ONLY }),
+      opt(T.CHANNEL, 'transcript_channel', 'Optional text channel for the transcript and summary (default: where the recording is started)', { channel_types: TEXT_ONLY }),
       opt(T.STRING, 'name', 'Team or meeting name shown in the transcript heading (default: the voice channel name)', { max_length: 50 }),
       opt(T.CHANNEL, 'backup_channel', 'Optional private text channel for the audio backup', { channel_types: TEXT_ONLY }),
       opt(T.STRING, 'language', 'Spoken language, a 2-letter code such as en, es, fr (default: en)', { max_length: 3 }),
@@ -224,19 +224,17 @@ export const COMMANDS = [
     ],
   },
   {
-    name: 'share-transcript',
-    description: 'Get a new private web link for a transcript (run it in the transcript channel)',
+    // Admin only, like /setup-recording (the handler checks the permission again).
+    name: 'transcript-settings',
+    description: 'Choose whether recordings are saved and/or posted, and where (admins only; no options = show)',
     contexts: [0],
+    default_member_permissions: MANAGE_SERVER,
     options: [
-      opt(T.STRING, 'id', 'Transcript ID (default: the latest one in this channel)', { max_length: 6 }),
-      opt(T.INTEGER, 'days', 'How many days the link works (default: 30, max 365)', { min_value: 1, max_value: 365 }),
+      opt(T.BOOLEAN, 'save', 'Keep the transcript and summary in the database, with a private web link (default: on)'),
+      opt(T.BOOLEAN, 'post', 'Post the transcript and summary in a channel (default: on)'),
+      opt(T.CHANNEL, 'destination', 'Text channel to post in (default: the channel where the recording was started)', { channel_types: TEXT_ONLY }),
+      opt(T.BOOLEAN, 'clear_destination', 'Go back to posting where the recording was started'),
     ],
-  },
-  {
-    name: 'unshare-transcript',
-    description: 'Turn off every web link for a transcript (run it in the transcript channel)',
-    contexts: [0],
-    options: [opt(T.STRING, 'id', 'Transcript ID (default: the latest one in this channel)', { max_length: 6 })],
   },
   {
     name: 'set-timezone',

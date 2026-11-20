@@ -86,4 +86,4 @@ jobs:
           PARAKEET_BUDGET_MIN: ${{ vars.PARAKEET_BUDGET_MIN }}
           PARAKEET_PYTHON: ${{ runner.temp }}/venv/bin/python
           PARAKEET_MODEL_DIR: ${{ github.workspace }}/.cache/parakeet-v2-int8
-        run: node record.mjs
+        run: node recorder/record.mjs

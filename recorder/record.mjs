@@ -6,15 +6,15 @@ import { joinVoiceChannel, entersState, VoiceConnectionStatus, EndBehaviorType }
 import { mkdirSync, rmSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { parseSessionConfig } from './recorder/config.mjs';
-import { reportFinish } from './recorder/report.mjs';
-import { fetchRemoteTeam } from './recorder/remote-config.mjs';
-import { shouldStop, trackEmpty, recordingNickname, batchAttachments } from './recorder/stop.mjs';
-import { finishSession } from './recorder/session.mjs';
+import { parseSessionConfig } from './config.mjs';
+import { reportFinish } from './report.mjs';
+import { fetchRemoteTeam } from './remote-config.mjs';
+import { shouldStop, trackEmpty, recordingNickname, batchAttachments } from './stop.mjs';
+import { finishSession } from './session.mjs';
 import { AlignedTrack } from './track.mjs';
-import { planEngines } from './pipeline/engines.mjs';
-import { buildSummaryProviders } from './pipeline/providers.mjs';
-import { fetchSummaryBudget } from './pipeline/budget.mjs';
+import { planEngines } from '../pipeline/engines.mjs';
+import { buildSummaryProviders } from '../pipeline/providers.mjs';
+import { fetchSummaryBudget } from '../pipeline/budget.mjs';
 
 const log = (m) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${m}`);
 const OUT_DIR = process.env.OUT_DIR || 'recordings';
@@ -71,10 +71,28 @@ async function main() {
   const me = guild.members.me ?? (await guild.members.fetchMe());
   if (me.voice.channelId) throw new Error('The bot is already in a voice channel in this server (one recording at a time per bot per server)');
 
-  const target = await client.channels.fetch(cfg.team.transcriptChannelId);
-  if (!target?.isTextBased() || target.guildId !== guild.id) throw new Error('transcriptChannelId must be a text channel in the same server as the voice channel');
+  // Where results are posted. With posting off (/transcript-settings) there is no channel: the summary link goes to whoever started it.
+  const target = cfg.team.post ? await client.channels.fetch(cfg.team.transcriptChannelId) : null;
+  if (cfg.team.post && (!target?.isTextBased() || target.guildId !== guild.id)) throw new Error('the transcript channel must be a text channel in the same server as the voice channel');
   const backup = cfg.team.backupChannelId ? await client.channels.fetch(cfg.team.backupChannelId) : null;
   if (backup && (!backup.isTextBased() || backup.guildId !== guild.id)) throw new Error('backupChannelId must be a text channel in the same server');
+
+  // A private message to whoever started the recording (used when posting is off). Needs the discord.js client; fails quietly
+  // if they do not accept messages from this bot (Discord error 50007).
+  const sendDm = async (content, file) => {
+    const user = await client.users.fetch(cfg.team.dmUserId);
+    return user.send({ content, allowedMentions: NOMENTIONS, ...(file ? { files: [{ attachment: file.data, name: file.name }] } : {}) });
+  };
+  // A short status message for failures: to the channel, or privately when posting is off. Never throws.
+  const notify = async (content) => {
+    try {
+      if (target) await retry(() => target.send({ content, allowedMentions: NOMENTIONS }));
+      else if (cfg.team.dmUserId) await sendDm(content);
+      else log(`no one to tell: ${content.slice(0, 80)}`);
+    } catch (e) {
+      log(`could not deliver a status message (${e.code || e.message})`);
+    }
+  };
 
   // ---- tell people they are being recorded (required) ---------------------------------------
   const originalNick = me.nickname;
@@ -87,7 +105,8 @@ async function main() {
     log(`could not change the bot's nickname (${e.code || e.message})`);
   }
   try {
-    await channel.send({ content: '🔴 **This voice channel is being recorded and transcribed.** The transcript and a summary go to the team\'s private transcript channel. Leave the channel if you do not agree.', allowedMentions: NOMENTIONS });
+    const where = cfg.team.post ? `The transcript and a summary will be posted in <#${target.id}>.` : 'A summary link will be sent privately to the person who started the recording.';
+    await channel.send({ content: `🔴 **This voice channel is being recorded and transcribed.** ${where} Leave the channel if you do not agree.`, allowedMentions: NOMENTIONS });
     noticeSent = true;
   } catch (e) {
     log(`could not post the notice in the voice channel chat (${e.code || e.message})`);
@@ -204,7 +223,7 @@ async function main() {
 
   // ---- nobody came -------------------------------------------------------------------------
   if (stopInfo.empty || speakers.size === 0) {
-    await retry(() => target.send({ content: `Recording ended: ${stopInfo.reason}. No speech was captured, so there is no transcript.`, allowedMentions: NOMENTIONS })).catch(() => {});
+    await notify(`Recording ended: ${stopInfo.reason}. No speech was captured, so there is no transcript.`);
     await client.destroy();
     await enginePlan.close();
     await reportFinish(process.env, 'done', 'no speech captured');
@@ -234,6 +253,10 @@ async function main() {
     },
     postText: async (text, { replyTo } = {}) => {
       const msg = await retry(() => target.send({ content: text, allowedMentions: NOMENTIONS, ...reply(replyTo) }));
+      return { messageId: msg.id };
+    },
+    dm: async (content, { file } = {}) => {
+      const msg = await retry(() => sendDm(content, file));
       return { messageId: msg.id };
     },
     postBackup: async (content, files) => {
@@ -273,7 +296,7 @@ async function main() {
         log(`rescue upload failed: ${err.message}`);
       }
     }
-    await retry(() => target.send({ content: `Transcription failed (${String(e.message).slice(0, 150)}). ${rescued ? 'The audio was saved to the backup channel so it can be transcribed later.' : 'The audio could not be saved and is gone.'}`, allowedMentions: NOMENTIONS })).catch(() => {});
+    await notify(`Transcription failed (${String(e.message).slice(0, 150)}). ${rescued ? 'The audio was saved to the backup channel so it can be transcribed later.' : 'The audio could not be saved and is gone.'}`);
     rmSync(OUT_DIR, { recursive: true, force: true });
     await client.destroy();
     await enginePlan.close();

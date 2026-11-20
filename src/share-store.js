@@ -63,7 +63,7 @@ export async function createShareLink(db, { transcriptId, createdBy, days }, now
     .bind(transcriptId, nowSec)
     .first();
   if ((active?.n ?? 0) >= MAX_ACTIVE_PER_TRANSCRIPT) {
-    return { ok: false, reason: `this transcript already has ${MAX_ACTIVE_PER_TRANSCRIPT} active links; turn them off with /unshare-transcript first` };
+    return { ok: false, reason: `this transcript already has ${MAX_ACTIVE_PER_TRANSCRIPT} active links` };
   }
   const token = newToken();
   const expiresAt = nowSec + d * DAY_SEC;
@@ -80,7 +80,7 @@ export async function findSharedTranscript(db, token, nowSec) {
   const hash = await hashToken(token);
   const row = await db
     .prepare(
-      `SELECT t.id, t.started_at, t.duration_sec, t.speakers, t.language, t.summary_text, t.actions_text, t.embedded_at, l.expires_at, l.token_hash
+      `SELECT t.id, t.started_at, t.duration_sec, t.speakers, t.language, t.summary_text, t.actions_text, t.summary_edited, t.summary_edited_at, t.embedded_at, l.expires_at, l.token_hash
        FROM share_links l JOIN transcripts t ON t.id = l.transcript_id
        WHERE l.token_hash = ? AND l.revoked_at IS NULL AND l.expires_at > ?`,
     )
@@ -96,19 +96,4 @@ export async function recordView(db, tokenHash, nowSec) {
   } catch {
     // ignore
   }
-}
-
-/** Turns off every link of a transcript. Returns how many were live. */
-export async function revokeLinks(db, transcriptId, nowSec) {
-  const r = await db
-    .prepare('UPDATE share_links SET revoked_at = ? WHERE transcript_id = ? AND revoked_at IS NULL AND expires_at > ?')
-    .bind(nowSec, transcriptId, nowSec)
-    .run();
-  return r.meta?.changes ?? 0;
-}
-
-/** Transcripts are looked up only in the server and private channel the command was run in. */
-export async function findTranscriptInChannel(db, guildId, channelId, id = null) {
-  const sql = `SELECT id, started_at, duration_sec FROM transcripts WHERE guild_id = ? AND post_channel_id = ?${id ? ' AND id = ?' : ''} ORDER BY started_at DESC LIMIT 1`;
-  return (await db.prepare(sql).bind(...(id ? [guildId, channelId, id] : [guildId, channelId])).first()) ?? null;
 }

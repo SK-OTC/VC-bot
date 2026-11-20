@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseConfig, verdict, logSummary, discordReport } from '../lib.mjs';
+import { parseConfig, verdict, logSummary, discordReport } from '../feasibility/lib.mjs';
 
 const GOOD = { DISCORD_TOKEN: 'x', CHANNEL_ID: '123456789012345678' };
 

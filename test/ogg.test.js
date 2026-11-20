@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, createReadStream, existsSync } from 'node:fs
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { OggOpusWriter, oggCrc, buildPage } from '../ogg.mjs';
+import { OggOpusWriter, oggCrc, buildPage } from '../recorder/ogg.mjs';
 
 const require = createRequire(import.meta.url);
 const hasFfmpeg = spawnSync('ffmpeg', ['-version']).status === 0 && spawnSync('ffprobe', ['-version']).status === 0;

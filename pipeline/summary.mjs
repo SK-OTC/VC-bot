@@ -39,7 +39,7 @@ export function chunkText(text, maxTokens = 4500) {
   return chunks.filter((c) => c.trim());
 }
 
-/** Groq chat (the fallback summary model, and what transcribe.mjs uses). */
+/** Groq chat (the fallback summary model, and what scripts/transcribe.mjs uses). */
 export class ChatClient {
   constructor({ apiKey, model = 'openai/gpt-oss-120b', limiter = chatLimiter(), maxTokens = 2000, reasoningEffort = '', ...rest } = {}) {
     if (!apiKey) throw new EngineError('auth', 'GROQ_API_KEY is missing');

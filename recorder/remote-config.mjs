@@ -31,7 +31,10 @@ export async function fetchRemoteTeam(env, { fetchImpl = fetch, sleep = sleepFor
           team: {
             voiceChannelId: String(c.voice_channel_id ?? ''),
             name: String(c.name ?? ''),
-            transcriptChannelId: String(c.transcript_channel_id ?? ''),
+            transcriptChannelId: String(c.transcript_channel_id ?? ''), // '' when posting is off
+            save: c.save !== false,
+            post: c.post !== false,
+            dmUserId: c.dm_user_id ? String(c.dm_user_id) : '', // who gets the summary link privately when posting is off
             backupChannelId: c.backup_channel_id ? String(c.backup_channel_id) : '',
             glossary: String(c.glossary ?? ''),
             language: String(c.language ?? ''),

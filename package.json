@@ -13,9 +13,9 @@
     "db:migrate:remote": "wrangler d1 migrations apply vc-bot --remote",
     "register": "node scripts/register-commands.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "record": "node --env-file=.env record-test.mjs",
-    "transcribe": "node transcribe.mjs",
-    "record-meeting": "node record.mjs"
+    "record": "node --env-file=.env feasibility/record-test.mjs",
+    "transcribe": "node scripts/transcribe.mjs",
+    "record-meeting": "node recorder/record.mjs"
   },
   "engines": {
     "node": ">=22"

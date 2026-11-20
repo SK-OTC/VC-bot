@@ -1,5 +1,5 @@
 // Command line: turn a folder of speaker files into transcript.txt (and optionally a summary).
-//   node transcribe.mjs <folder> [--dry-run] [--summary] [--out <file name>]
+//   node scripts/transcribe.mjs <folder> [--dry-run] [--summary] [--out <file name>]
 // Settings (environment): ENGINE_ORDER ("parakeet,groq" by default; use "parakeet" or "groq" alone to compare them),
 // GROQ_API_KEY, LANGUAGE (default en), GLOSSARY ("LiteCut=Lite Cut|Lite cut, CapCut, ..."), GROQ_MODEL (default
 // whisper-large-v3), LLM_MODEL (default openai/gpt-oss-120b), PARAKEET_PYTHON (Python with onnx-asr installed),
@@ -10,10 +10,10 @@
 import { readdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { runPipeline } from './pipeline/run.mjs';
-import { planEngines } from './pipeline/engines.mjs';
-import { displayNames, buildHeader, formatTranscript } from './pipeline/transcript.mjs';
-import { ChatClient, summarize } from './pipeline/summary.mjs';
+import { runPipeline } from '../pipeline/run.mjs';
+import { planEngines } from '../pipeline/engines.mjs';
+import { displayNames, buildHeader, formatTranscript } from '../pipeline/transcript.mjs';
+import { ChatClient, summarize } from '../pipeline/summary.mjs';
 
 const log = (m) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${m}`);
 
@@ -21,7 +21,7 @@ async function main() {
   const dir = process.argv[2];
   const dry = process.argv.includes('--dry-run');
   const wantSummary = process.argv.includes('--summary');
-  if (!dir || !existsSync(dir)) throw new Error('usage: node transcribe.mjs <folder with speaker-N-001.ogg files> [--dry-run] [--summary]');
+  if (!dir || !existsSync(dir)) throw new Error('usage: node scripts/transcribe.mjs <folder with speaker-N-001.ogg files> [--dry-run] [--summary]');
 
   const groups = new Map();
   for (const f of readdirSync(dir).sort()) {

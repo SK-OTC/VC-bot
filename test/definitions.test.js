@@ -32,7 +32,7 @@ test('command definitions satisfy Discord registration rules', () => {
     'new-meeting', 'update-meeting', 'cancel-meeting', 'upcoming-meetings',
     'add-update-preset', 'meeting-presets', 'delete-preset',
     'add-team', 'remove-team-member', 'show-teams', 'delete-team',
-    'calendar', 'setup-recording', 'recording-settings', 'remove-recording-setup', 'start-recording', 'stop-recording', 'share-transcript', 'unshare-transcript', 'set-timezone',
+    'calendar', 'setup-recording', 'recording-settings', 'remove-recording-setup', 'start-recording', 'stop-recording', 'transcript-settings', 'set-timezone',
   ]);
   const seen = new Set();
   for (const c of COMMANDS) {

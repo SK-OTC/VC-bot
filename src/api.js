@@ -7,7 +7,7 @@
 //                                              includes a one-time private web link: { ok, id, chunks, share_url?, share_expires_at? }
 // Nothing here ever logs transcript text, names or secrets.
 import { bearerMatches } from './secure.js';
-import { SESSION_ID_RE, endSession, getRecordingSetup, getSession, readStopFlag, saveTranscript, transcriptIdExists } from './recording-store.js';
+import { SESSION_ID_RE, endSession, getRecordingSetup, getSession, getTranscriptSettings, readStopFlag, resolveTranscriptTarget, saveTranscript, transcriptIdExists } from './recording-store.js';
 import { validateTranscriptPayload } from './transcript-payload.js';
 import { configuredDays, createShareLink, linkUrl, publicOrigin } from './share-store.js';
 import { embedIfDue } from './semantic.js';
@@ -78,11 +78,18 @@ async function sessionConfig(env, rawId) {
   if (!session) return respond({ error: 'not found' }, 404);
   const setup = await getRecordingSetup(env.DB, session.voice_channel_id, session.guild_id);
   if (!setup) return respond({ error: 'not found' }, 404);
+  // What to do with the results: the server's /transcript-settings (save, post, destination), falling back to the voice
+  // channel's own transcript channel and then the channel where the recording was started.
+  const target = resolveTranscriptTarget({ settings: await getTranscriptSettings(env.DB, session.guild_id), setup, session });
   return respond({
     voice_channel_id: setup.voice_channel_id,
     guild_id: setup.guild_id,
     name: setup.name,
-    transcript_channel_id: setup.transcript_channel_id,
+    transcript_channel_id: target.channelId, // null when posting is off (or there is nowhere to post)
+    save: target.save,
+    post: target.post,
+    // Who gets the summary link in a private message when posting is off: the person who started it (not for scheduled starts).
+    dm_user_id: /^\d{17,20}$/.test(String(session.started_by)) ? String(session.started_by) : null,
     backup_channel_id: setup.backup_channel_id ?? null,
     glossary: setup.glossary,
     language: setup.language,

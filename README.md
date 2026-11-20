@@ -2,9 +2,9 @@
 
 One Discord bot, in one repository, in three parts:
 
-1. **Feasibility test** (`record-test.mjs`): can a bot join a Discord voice channel under Discord's
+1. **Feasibility test** (`feasibility/record-test.mjs`): can a bot join a Discord voice channel under Discord's
    end-to-end encryption (DAVE) and record one clear, time-aligned track per speaker? It does not transcribe anything.
-2. **Meeting recorder** (`record.mjs` and friends, run by GitHub Actions): the real thing. Records a meeting, transcribes it
+2. **Meeting recorder** (`recorder/record.mjs` and friends, run by GitHub Actions): the real thing. Records a meeting, transcribes it
    (Parakeet on the runner, Groq Whisper as the fallback), writes a summary with action items, and posts both to the team's
    private channel.
 3. **The Cloudflare Worker** (`src/`): the slash commands (meetings, reminders, Google Calendar, recording setup), the
@@ -106,9 +106,9 @@ with what you hear when you play both speakers' files together.
 
 | File | What it does |
 | ---- | ------------ |
-| `record.mjs` | The production recorder. Joins, renames itself `[REC] ...`, posts a notice, records, stops by rule, then hands over to the steps below |
-| `track.mjs` | One time-aligned Ogg file per speaker (silence filled in), and the overlap measurement |
-| `ogg.mjs` | Minimal Ogg Opus writer |
+| `recorder/record.mjs` | The production recorder. Joins, renames itself `[REC] ...`, posts a notice, records, stops by rule, then hands over to the steps below |
+| `recorder/track.mjs` | One time-aligned Ogg file per speaker (silence filled in), and the overlap measurement |
+| `recorder/ogg.mjs` | Minimal Ogg Opus writer |
 | `recorder/config.mjs` | Reads settings; takes the channel settings from `/setup-recording` (via `recorder/remote-config.mjs`) or the optional `TEAM_CONFIG` secret; refuses to run without them |
 | `recorder/stop.mjs` | Stop rules (limit, empty channel, silence, stop flag), nickname, attachment batching |
 | `recorder/session.mjs` | After the meeting: transcribe, post transcript, summary, audio backup, upload to the Worker |
@@ -120,8 +120,8 @@ with what you hear when you play both speakers' files together.
 | `pipeline/glossary.mjs`, `glossary-fix.mjs`, `english-words.txt` | The glossary: the Whisper prompt, the post-correction, and the list of ordinary words it never changes |
 | `pipeline/cleanup.mjs`, `transcript.mjs` | Dropping invented text, merging speakers' lines, the transcript header |
 | `pipeline/summary.mjs`, `prompts.mjs`, `verify.mjs`, `cloudflare.mjs`, `providers.mjs`, `budget.mjs` | The summary: prompts, the Cloudflare Llama and Groq clients and their fallback order, the check against the transcript, the Neuron budget |
-| `pipeline/upload.mjs` | Sending the finished transcript to the Worker |
-| `transcribe.mjs` | Command line: a folder of `speaker-N-001.ogg` files in, a transcript (and optionally a summary) out |
+| `pipeline/upload.mjs`, `summary-message.mjs` | Sending the finished transcript to the Worker; the one Discord message that holds the summary and the link |
+| `scripts/transcribe.mjs` | Command line: a folder of `speaker-N-001.ogg` files in, a transcript (and optionally a summary) out |
 | `.github/workflows/record.yml` | The job the Worker starts (or you start by hand): installs Parakeet, caches its model, records, transcribes, posts |
 | `.github/workflows/spike-parakeet.yml`, `scripts/spike/` | Manual measurements: Parakeet's speed on a runner, VAD versus windows, a Cloudflare API probe |
 
@@ -132,17 +132,17 @@ Put the `speaker-1-001.ogg`, `speaker-2-001.ogg` ... files in one folder. Option
 
 ```
 npm ci
-node transcribe.mjs path/to/folder --dry-run        # no key needed: shows how much speech and how many batches
+node scripts/transcribe.mjs path/to/folder --dry-run        # no key needed: shows how much speech and how many batches
 ```
 
 With Groq (needs a key):
 
 ```
 # bash / Git Bash
-GROQ_API_KEY=... ENGINE_ORDER=groq GLOSSARY="LiteCut, CapCut" node transcribe.mjs path/to/folder --summary --out groq.txt
+GROQ_API_KEY=... ENGINE_ORDER=groq GLOSSARY="LiteCut, CapCut" node scripts/transcribe.mjs path/to/folder --summary --out groq.txt
 
 # PowerShell (the line above is not valid there)
-$env:GROQ_API_KEY = "..."; $env:ENGINE_ORDER = "groq"; node transcribe.mjs path/to/folder --summary --out groq.txt
+$env:GROQ_API_KEY = "..."; $env:ENGINE_ORDER = "groq"; node scripts/transcribe.mjs path/to/folder --summary --out groq.txt
 ```
 
 With Parakeet (no Groq key needed for the transcript, and the audio stays on your computer): install Python 3 and
@@ -152,10 +152,10 @@ With Parakeet (no Groq key needed for the transcript, and the audio stays on you
 
 ```
 # bash / Git Bash
-ENGINE_ORDER=parakeet node transcribe.mjs path/to/folder --out parakeet.txt
+ENGINE_ORDER=parakeet node scripts/transcribe.mjs path/to/folder --out parakeet.txt
 
 # PowerShell
-$env:ENGINE_ORDER = "parakeet"; node transcribe.mjs path/to/folder --out parakeet.txt
+$env:ENGINE_ORDER = "parakeet"; node scripts/transcribe.mjs path/to/folder --out parakeet.txt
 ```
 
 This needs ffmpeg (and ffprobe) installed on your computer. `--out` is a file name (not a path); the file is written inside
@@ -214,7 +214,7 @@ It refuses to record if it can neither rename itself nor post the notice.
 | `SESSION_ID` | set by the Worker | Which `/start-recording` session this run belongs to (4 to 40 letters, digits, `-`, `_`) |
 | `OUT_DIR` | `recordings` | Where the per-speaker audio is written during the run (deleted at the end) |
 | `GROQ_BASE_URL` | Groq's address | For tests against a fake server |
-| `LANGUAGE`, `GLOSSARY` | `en`, empty | Used by `transcribe.mjs` |
+| `LANGUAGE`, `GLOSSARY` | `en`, empty | Used by `scripts/transcribe.mjs` |
 
 Rate limits are in `pipeline/limiter.mjs` (`whisperLimiter`, `chatLimiter`, `cfLimiter` at 20 requests a minute for
 Cloudflare). They are cautious defaults. Check them against your own Groq and Cloudflare account limits.
@@ -286,7 +286,7 @@ different licence for its hosted service; the Hugging Face model card governs th
 
 ## Tests
 
-`npm test` runs the offline tests: 440 at the time of writing, all passing. They need no network and no keys.
+`npm test` runs the offline tests: 495 at the time of writing, all passing. They need no network and no keys.
 
 * **Recorder and pipeline:** the settings parsers, pass/fail rules, the Ogg writer, the aligned tracks and overlap
   measurement, the speech-span and batch logic, transcript clean-up and merging, the rate limiters, the Groq retry rules
@@ -298,8 +298,15 @@ different licence for its hosted service; the Hugging Face model card governs th
   placeholder when both fail.
 * **Summary and questions:** the Cloudflare and Groq clients, the fallback chain, the timestamp check, the Neuron meter and
   its caps, hybrid retrieval, the rate limits and the prompt-injection wrapping of excerpts.
-* **The Worker:** commands, setup and recording commands, the recorder API, share links and the share page (escaping, CSP,
-  contrast of the colours), against an in-memory D1 stand-in (`test/helpers/d1.js`).
+* **The Worker:** commands, setup and recording commands, `/transcript-settings`, the recorder API, share links, the share page
+  (escaping, CSP, contrast of the colours) and the `/admin` editing (including that the transcript never changes), against an
+  in-memory D1 stand-in (`test/helpers/d1.js`). Migration `0012` is also tested for keeping existing setups.
+* **What gets sent where:** `test/delivery.test.js` runs `finishSession` with fakes for every save/post combination (order of
+  the save and the message, one message with the link, the 2000-character limit, the private-message path, failures), and
+  `test/summary-message.test.js` covers the truncation at the exact limits.
+* **Scheduled auto-join:** `test/auto-record.test.js` (which links start a recording and which do nothing, the checks, not
+  starting twice) and `test/voice-link.test.js` (what counts as a link).
+* **Prompts:** `test/prompts.test.js` pins every behaviour the shortened summary prompts must still ask for.
 * **Python:** `pipeline/test_parakeet_worker.py` (8 tests of the window splitting and the worker protocol). `npm test` does not
   run it; `record.yml` does, before each recording.
 
@@ -314,7 +321,7 @@ The tests prove logic only. They do **not** prove:
 
 * Groq's real endpoints, limits or Whisper's accuracy on your voices (the endpoint addresses are assumed from Groq's
   OpenAI-compatible design).
-* Joining Discord voice in `record.mjs`: the notice, rename and stop loop have not run against Discord, and the
+* Joining Discord voice in `recorder/record.mjs`: the notice, rename and stop loop have not run against Discord, and the
   recorder's per-speaker streams have not been exercised in a real overlapping conversation.
 * `record.yml` with Parakeet and Cloudflare: the version that installs Parakeet, caches the model and calls Cloudflare
   has **not been run on GitHub**. The log of the first run is public in a public repo: check it contains no names or transcript text.
@@ -323,6 +330,13 @@ The tests prove logic only. They do **not** prove:
   full day), and Llama's summary quality.
 * Discord and GitHub calls made by the Worker: dispatching the workflow, and `GET /guilds/{id}/voice-states/{user}` (used by
   `/start-recording` to find your voice channel).
+* Discord behaviour the tests only imitate: the private message to the person who started the recording (`discord.js`
+  `user.send`), the recorder joining the channel from a scheduled start, and that the Worker can check only that the bot can
+  **see** the channel (View Channel): whether it may Connect, or the channel is full, is found out by the recorder when it
+  tries to join, and then the session ends as failed. The Worker also cannot ask Discord whether the bot is already in a call;
+  it relies on the recordings it knows about.
+* Whether the shortened summary prompts give summaries as good as the old ones. The tests pin the wording; only a comparison
+  on real transcripts shows quality.
 * Whether the real model resists an instruction hidden in a transcript ("ignore your instructions"). The prompts quote
   excerpts as data and the tests check the wrapping, not the model's behaviour.
 * Parakeet's **accuracy** on your voices: nothing has measured its word error rate against Groq yet. Its speed on multi-speaker
@@ -343,7 +357,7 @@ post messages and answer slash commands over HTTP, and the GitHub recorder logs 
 | Where | Files | Secrets |
 |-------|-------|---------|
 | Cloudflare Worker + D1 | `src/` (commands, scheduler, Google Calendar, recorder API, share pages, questions), `migrations/`, `wrangler.toml`, `scripts/` | `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_TOKEN`, `WORKER_SHARED_SECRET`, `GITHUB_DISPATCH_TOKEN`; optional `GROQ_API_KEY` (Groq answers questions when Cloudflare cannot) and `BRIDGE_SECRET` (the Google Calendar bridge) |
-| GitHub Actions recorder | `record.mjs`, `recorder/`, `pipeline/`, `track.mjs`, `.github/workflows/record.yml` | `DISCORD_TOKEN` (the same bot's token), `GROQ_API_KEY`, `WORKER_URL`, `WORKER_SHARED_SECRET`; optional `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (`TEAM_CONFIG` is optional too) |
+| GitHub Actions recorder | `recorder/` (including `record.mjs`), `pipeline/`, `.github/workflows/record.yml` | `DISCORD_TOKEN` (the same bot's token), `GROQ_API_KEY`, `WORKER_URL`, `WORKER_SHARED_SECRET`; optional `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (`TEAM_CONFIG` is optional too) |
 
 `WORKER_SHARED_SECRET` is one long random string you make up. It goes in both places, and the recorder uses it (as a
 bearer token) to call the Worker's recorder API:
@@ -368,17 +382,34 @@ instead of your `wrangler login`, so commands such as `npm run db:migrate:remote
 
 | Command | What it does |
 |---------|--------------|
-| `/start-recording [channel]` | Records the voice channel you are in (or the one you pick). The Worker starts the GitHub job; the bot joins within about a minute |
+| `/start-recording [channel]` | Records the voice channel you are in (or the one you pick). The Worker starts the GitHub job; the bot joins within about a minute. The channel where you typed the command is remembered: that is where the transcript and summary go (see `/transcript-settings`) |
 | `/stop-recording [channel] [force]` | The bot leaves within about 15 seconds, then transcribes and posts as usual. Only the person who started it, or someone with Manage Server, can stop it. `force:True` clears a stuck recording |
 
 Anyone in the server can start a recording, but only in a voice channel an admin has set up (below). Otherwise
 `/start-recording` says so right away.
 
+### Scheduled meetings that record by themselves
+
+When a scheduled meeting's start time comes (the cron runs once a minute, and a start job up to 10 minutes late still counts),
+the bot checks the meeting's **`location`**. If it is a link to a Discord voice channel, it starts a recording exactly as
+`/start-recording` would. The link must be the whole location, in this form (what Discord's "Copy Link" gives):
+`https://discord.com/channels/<server id>/<voice channel id>`. Anything else (a Google Meet or Zoom link, a message link, a
+`<#channel>` mention, plain text) does nothing, and the normal "starting now" message is posted either way.
+
+It also requires all of these, and otherwise silently does nothing (the reason is written to the Worker log):
+the link is for the meeting's own server; the channel is a voice channel the bot can see; the channel has a
+`/setup-recording`; nothing is already being recorded in this server (so the bot never joins a second call or rejoins one it is
+in); and this occurrence of the meeting was not already handled (a job can be delivered twice). The results go to the meeting's
+own channel (see `/transcript-settings`). Who can schedule meetings, and so who can trigger a recording, is whatever you allow in
+Discord's command permissions; the `/setup-recording` gate still decides which voice channels can ever be recorded. The bot posts
+its usual notice in the voice channel when it joins. If it cannot Connect, or the channel is full, the recorder finds out only
+when it tries to join and the session ends as failed.
+
 ### Setting up a server: `/setup-recording` (no GitHub secret to edit)
 
 | Command (needs Manage Server) | What it does |
 |---------|--------------|
-| `/setup-recording voice_channel transcript_channel [name] [backup_channel] [language] [glossary]` | Saves where that voice channel's transcript and summary go. Run it again to change it |
+| `/setup-recording voice_channel [transcript_channel] [name] [backup_channel] [language] [glossary]` | Allows recording that voice channel and saves its name, backup channel, language and glossary. `transcript_channel` is optional (see below). Run it again to change it |
 | `/recording-settings [voice_channel]` | Shows the saved setups for this server |
 | `/remove-recording-setup voice_channel` | Stops allowing recordings of that voice channel |
 
@@ -386,7 +417,7 @@ To add the bot to another server: invite the same bot, give it the permissions b
 Nothing in GitHub changes. (Register the commands globally, with no `DISCORD_GUILD_ID`, so they show up in every server.)
 
 * **Checked when you save it.** The bot looks up each channel, makes sure they are all in this server and of the right
-  kind, and posts a confirmation message in the transcript channel (and backup channel). If it cannot see or post
+  kind, and posts a confirmation message in the transcript channel (if you gave one) and the backup channel. If it cannot see or post
   there, nothing is saved and you are told which permissions are missing, so a mistake shows up now instead of in the
   middle of a meeting.
 * **Admin only, twice.** The commands are hidden from people without Manage Server by default, and the handlers check
@@ -408,13 +439,36 @@ Without the token the commands still exist and say recording is not set up. The 
 ends (`POST /api/sessions/<id>/finish`), so an empty meeting or a crash frees the channel. Sessions that never report in
 are cleared automatically after 20 minutes (never started) or 6 hours (running).
 
+### What happens to a finished recording: `/transcript-settings`
+
+| Command (needs Manage Server) | What it does |
+|---------|--------------|
+| `/transcript-settings` | With no options: shows the current settings |
+| `/transcript-settings [save] [post] [destination] [clear_destination]` | Changes them. One setting per server |
+
+* **Save** (default on) keeps the transcript and summary in the database. That is what the private web page, its question box and
+  the `/admin` editing use.
+* **Post** (default on) sends the transcript file and the summary into a Discord text channel.
+* **Destination** (optional) is the text channel to post in. With none set, results go to **the channel where
+  `/start-recording` was typed**. (A voice channel set up earlier with a `transcript_channel` keeps posting there unless you set
+  a destination: the order is destination, then that older setting, then the start channel. For a scheduled meeting that starts
+  recording by itself, the "start channel" is the meeting's own channel.) A new destination is tested with a real message first.
+  Note that the start channel may be a public channel: set a destination if transcripts must go somewhere private.
+* **Save off, post on:** the transcript and the **whole** summary are posted in the channel (over several messages if needed).
+  There is no web page, question box or link.
+* **Post off, save on:** nothing is posted in any channel. The summary and its web link are sent in a **private message to the
+  person who started the recording**. (Discord only allows an ephemeral reply for 15 minutes after a command, and a recording
+  finishes later, so a private message is used.) It fails quietly if that person does not accept messages from the bot, and a
+  recording started from a scheduled meeting has no such person, so nothing is delivered for it (it is still saved).
+* **Both off** is refused: the recording would be thrown away.
+
 ### Private web links for transcripts
 
 Every saved transcript gets a private page at `https://<your worker>/t/<token>` showing the summary and action items,
 plus a box to **ask questions about the meeting**. The full transcript is **not** shown on the page (it stays in the
-database, and in Discord as the file the bot posted). The recorder posts the link in the team's private channel under
-the transcript. It is made when the
-transcript is stored, so it needs `WORKER_URL` and `WORKER_SHARED_SECRET` to be set on GitHub.
+database, and in Discord as the file the bot posted). The recorder posts the link in
+**one message together with the summary** (see below). It is made when the transcript is stored, so it needs `WORKER_URL` and
+`WORKER_SHARED_SECRET` to be set on GitHub.
 
 **How the page looks.** A dark page with a centred note column (title, a people chip, a date chip, then the summary with
 `#`-marked headings and nested bullets) and, when questions are on, a right-hand panel with two suggestion buttons
@@ -427,10 +481,18 @@ That screenshot was **light** mode, so the light colours were sampled from its p
 contrast). They are not that product's own dark colours. All colours are variables at the top of `src/share-page.js`.
 The length of the meeting is no longer shown on the page.
 
-| Command (run it in the transcript's private channel) | What it does |
-|---------|--------------|
-| `/share-transcript [id] [days]` | Makes a new link (default: the latest transcript in this channel, 30 days, up to 365). Only you see the reply |
-| `/unshare-transcript [id]` | Turns off every link for that transcript, including the automatic one |
+**The summary message.** After the transcript is saved, the recorder posts one message that holds the summary and the link
+(wrapped in `<...>` so Discord shows no preview card). Discord allows "up to 2000 characters" of message content
+(<https://docs.discord.com/developers/resources/message>), so when the summary does not fit, only the copy **in Discord** is cut:
+at a line boundary, with a trailing `…`, leaving room for the whole link. The web page always shows the full summary. The link
+expires after `SHARE_LINK_DAYS` (default 30). The old `/share-transcript` and `/unshare-transcript` commands were removed.
+
+**Editing the summary: `/t/<token>/admin`.** Add `/admin` to the end of the link to edit the summary text (names, bullets,
+headings). There is **no separate sign-in: anyone who has the link can edit**, so the link is a read-and-edit key. What contains
+that: the generated summary is never overwritten (an edit is stored beside it, and "Restore the generated summary" brings it
+back); the transcript has no editing route at all; the form works only from the page itself; everything is escaped; and an
+expired link cannot edit. Edited text is shown on the page exactly as written (the generated action items are not added beside
+it), and it is what the question box is given as the meeting's summary.
 
 Settings in `wrangler.toml`: `SHARE_LINK_DAYS` (default 30; `0` turns the automatic links off) and optionally
 `PUBLIC_URL` (an https address, for example your own domain, to build links on instead of the Worker's address).
@@ -440,8 +502,8 @@ How it is protected:
 * **Unguessable.** A link holds 256 random bits, so it cannot be guessed. Only a hash of it is stored: a database
   dump or `backup.sql` cannot open any page. Because of that, a lost link cannot be recovered; make a new one.
 * **Same "not available" page** for a wrong, expired, revoked or malformed link, so nobody can probe for real ones.
-* **Expires and can be revoked.** Links stop at their expiry time; `/unshare-transcript` stops them at once.
-  At most 10 live links per transcript. Deleting a transcript deletes its links.
+* **Expires.** Links stop at their expiry time. There is currently **no way to turn one off earlier** (the revoke command was
+  removed), so treat a link like a password. At most 10 live links per transcript. Deleting a transcript deletes its links.
 * **The page has no images or links, one tiny script, and its forms post only back to itself.** The script
   (`src/chat-script.js`) is allowed by the Content-Security-Policy **only by its SHA-256 hash**, so no other script can run
   even if some text were ever not escaped; it may only fetch from the page's own address, and it puts reader text on the page
@@ -450,13 +512,13 @@ How it is protected:
   `X-Frame-Options: DENY` and `nosniff` are sent on every response.
 * **Not indexed or cached.** `noindex` headers and meta tag, `robots.txt` disallowing everything, `Cache-Control: no-store`,
   and `Referrer-Policy: no-referrer` so the address is not passed on to other sites.
-* **Not logged.** Neither the Worker nor the recorder ever prints a link, and the recorder posts it only to the private channel.
-* **Only the right people can make links.** The commands work only in the channel the transcript was posted to, so only
-  people who can use that channel can create or revoke its links.
+* **Not logged.** Neither the Worker nor the recorder ever prints a link. The recorder sends it only in the summary message
+  (to the channel, or privately when posting is off).
 
 ### Asking questions about a meeting (Llama 3.3 on Cloudflare, Groq as the fallback)
 
-A reader types a question; the Worker finds the relevant parts of **that one meeting's** stored transcript and asks
+A reader types a question; the Worker finds the relevant parts of **that one meeting's** stored transcript, adds the meeting's summary (the edited one,
+if someone edited it), and asks
 **Llama 3.3 70B on Workers AI** (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, through the `AI` binding, no key needed) to
 answer from them only. If Cloudflare errors (429, 5xx, timeout), **Groq gpt-oss-120b** answers instead (needs the
 `GROQ_API_KEY` secret on the Worker; `QA_MODEL_ORDER` changes the order). Excerpts are capped at 6,000 tokens
@@ -472,7 +534,7 @@ Setup:
    on the Worker only) so Groq can answer when Cloudflare cannot. With neither, the page has no question box.
 2. For meaning-based search, create the vector index **before deploying** (the bindings in `wrangler.toml` need it):
    `npx wrangler vectorize create vc-bot-chunks --dimensions=768 --metric=cosine`
-3. `npm run db:migrate:remote` (applies any migration not yet applied, up to `0011`), then `npm run deploy`. If it fails
+3. `npm run db:migrate:remote` (applies any migration not yet applied, up to `0013`), then `npm run deploy`. If it fails
    with *Authentication error [code: 10000]*, see "Keep two Cloudflare tokens apart" above.
 
 How the vector index is used:
@@ -530,7 +592,9 @@ the model that wrote it.
   decisions, action items, open questions), every item with its `[hh:mm:ss]`; the final summary is limited to 1,200
   tokens. Use only the transcript; never invent owners, deadlines or numbers; an action item is `Owner: task [hh:mm:ss]`
   with the owner exactly as in the transcript or `Unassigned`; the merge step must not drop any action item. Every prompt
-  lists the team's glossary spellings.
+  lists the team's glossary spellings. The four prompts (`pipeline/prompts.mjs`) were shortened by 16 to 22 percent by merging
+  duplicate rules (the "Unassigned" owner rule and the speaker-name rule were each stated twice); `test/prompts.test.js` pins
+  every behaviour that is still required. Whether the summaries are as good as before has not been compared on real transcripts.
 * **Check against the transcript, no extra model call.** For each decision and action item: are there transcript lines
   within 30 seconds of its timestamp, and do at least two non-trivial words from the item appear in lines within 60
   seconds? If not, the item is **kept** and ends with `(unverified)`. Nothing is ever deleted; the job log shows only the
@@ -590,7 +654,7 @@ npm run smoke                   # the Worker on the real runtime with a local da
 npm run db:migrate:local        # apply migrations to a local test database
 npm run db:migrate:remote       # apply new migrations to the real database (needs your Cloudflare login)
 npm run deploy                  # publish the Worker (after db:migrate:remote and setting the secrets)
-npm run register                # (re)register all 20 slash commands with Discord (re-run it after any command text changes)
+npm run register                # (re)register all 19 slash commands with Discord (re-run it after any command text changes)
 npm run transcribe -- <folder>  # transcribe a folder of speaker-N-001.ogg files (see Part 2)
 npm run record-meeting          # what the GitHub job runs: join, record, transcribe, post (needs the settings above)
 npm run record                  # Part 1's feasibility test
