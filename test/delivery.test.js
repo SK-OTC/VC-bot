@@ -59,7 +59,7 @@ async function run({ team = {}, summary = SHORT, upload = 'ok', dmFails = false 
   };
   try {
     const result = await finishSession({
-      speakers: [{ label: 'speaker-1', name: 'Farah', files: [makeAudio(dir)] }],
+      speakers: [{ label: 'speaker-1', name: 'Alice', files: [makeAudio(dir)] }],
       offsetSec: 0,
       startedAt: Date.UTC(2026, 10, 19, 10, 0, 0),
       cfg,

@@ -3,13 +3,15 @@
 //   /api/...        recorder endpoints (own secret)
 //   /t/<token>      a private meeting page: summary plus "ask a question" (the token in the address is the only key)
 //   /t/<token>/admin  edit the summary's text (the same key; no other sign-in). The transcript is never editable.
-//   /robots.txt     tells well-behaved crawlers to stay away from everything
+//   /privacy        the public privacy policy (the only page crawlers are allowed to read)
+//   /robots.txt     tells well-behaved crawlers to stay away from everything except /privacy
 import { handleApi } from './api.js';
 import { MAX_QUESTION_CHARS, answerQuestion, buildMessages, cleanQuestion, joinContext, questionLimits, questionsEnabled, selectContext, takeQuestionSlot, usableQaProviders } from './ask.js';
 import { neuronsToday, softCaps } from './meter.js';
 import { secondsUntilMidnightUtc } from './neurons.js';
 import { embedIfDue, semanticHits } from './semantic.js';
 import { cleanSummaryEdit, clearSummaryEdit, saveSummaryEdit } from './recording-store.js';
+import { PRIVACY_HEADERS, privacyPage } from './privacy-page.js';
 import { SECURITY_HEADERS, adminPage, notFoundPage, transcriptPage } from './share-page.js';
 import { TOKEN_RE, findSharedTranscript, recordView } from './share-store.js';
 
@@ -153,7 +155,10 @@ export async function handleHttp(request, env, ctx, nowSec) {
   const url = new URL(request.url);
   if (url.pathname.startsWith('/api/')) return handleApi(request, env, url, nowSec, ctx);
   if (url.pathname === '/robots.txt' && (request.method === 'GET' || request.method === 'HEAD')) {
-    return new Response('User-agent: *\nDisallow: /\n', { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' } });
+    return new Response('User-agent: *\nAllow: /privacy\nDisallow: /\n', { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' } });
+  }
+  if (url.pathname === '/privacy' && (request.method === 'GET' || request.method === 'HEAD')) {
+    return new Response(request.method === 'HEAD' ? null : privacyPage({ contactEmail: env.PRIVACY_CONTACT_EMAIL }), { headers: PRIVACY_HEADERS });
   }
   if (url.pathname.startsWith('/t/')) return handleShare(request, env, ctx, url, nowSec);
   return null;

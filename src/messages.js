@@ -84,7 +84,7 @@ export function meetLinkText(m, link) {
 }
 
 /** Private note to the organizer after the event was created. */
-export function calendarCreatedNote(m, { account, teamName, guestCount, meetRequested = true, meetLink, linkPosted, linkPostError }) {
+export function calendarCreatedNote(m, { account, teamName, guestCount, meetRequested = true, meetLink, meetLinkRejected = false, linkPosted, linkPostError }) {
   const lines = [`Google Calendar: **${m.name}** was added to the calendar of ${account ?? 'your Google account'}.`];
   if (teamName) {
     lines.push(`Invited: team ${teamName} (${guestCount} ${guestCount === 1 ? 'guest' : 'guests'}). Google emails the invites.`);
@@ -93,6 +93,8 @@ export function calendarCreatedNote(m, { account, teamName, guestCount, meetRequ
   }
   if (!meetRequested) {
     lines.push('No Google Meet link was created, as you asked.');
+  } else if (meetLinkRejected) {
+    lines.push('Warning: your script returned a "Meet link" that is not a meet.google.com address, so it was not posted or saved. Check your Apps Script.');
   } else if (!meetLink) {
     lines.push('Warning: Google did not return a Meet link for this event.');
   } else if (linkPosted) {

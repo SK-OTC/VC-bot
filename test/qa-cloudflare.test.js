@@ -12,7 +12,7 @@ const GROQ_KEY = 'gsk_test_key_that_must_never_leak_123';
 
 // ---------- fakes ----------
 
-const defaultChat = () => ({ response: 'Farah said the budget is forty thousand dollars [00:02:00].', usage: { prompt_tokens: 900, completion_tokens: 40, neurons: 25.5 } });
+const defaultChat = () => ({ response: 'Alice said the budget is forty thousand dollars [00:02:00].', usage: { prompt_tokens: 900, completion_tokens: 40, neurons: 25.5 } });
 
 /** Workers AI: answers chat requests (the Llama model) with `chat(n, input)` and embeddings with a fixed vector. */
 function fakeAi(chat = defaultChat) {
@@ -86,17 +86,17 @@ const payload = (over = {}) => ({
   summary_message_id: null,
   started_at: '2026-11-19T10:00:00.000Z',
   duration_sec: 600,
-  speakers: [{ name: 'Farah', speaking_sec: 300 }],
+  speakers: [{ name: 'Alice', speaking_sec: 300 }],
   engine: 'e',
   language: 'en',
-  transcript_text: 'MEETING TRANSCRIPT\n\n[00:02:00] Farah: the budget is forty thousand dollars\n[00:02:30] Sam: agreed',
+  transcript_text: 'MEETING TRANSCRIPT\n\n[00:02:00] Alice: the budget is forty thousand dollars\n[00:02:30] Sam: agreed',
   summary_text: '**Summary**\n- budget agreed [00:02:00]',
   actions_text: null,
   ...over,
 });
 
 const longTranscript = (extra = '') =>
-  ['MEETING TRANSCRIPT', '', ...Array.from({ length: 1500 }, (_, i) => `[01:${String(i % 60).padStart(2, '0')}:00] Sam: filler sentence number ${i} about weather and lunch`), `[02:00:00] Farah: the zebra budget is forty thousand ${extra}`].join('\n');
+  ['MEETING TRANSCRIPT', '', ...Array.from({ length: 1500 }, (_, i) => `[01:${String(i % 60).padStart(2, '0')}:00] Sam: filler sentence number ${i} about weather and lunch`), `[02:00:00] Alice: the zebra budget is forty thousand ${extra}`].join('\n');
 
 const excerptsOf = (userContent) => /<transcript_excerpts>\n([\s\S]*)\n<\/transcript_excerpts>/.exec(userContent)?.[1] ?? '';
 
@@ -189,7 +189,7 @@ test('Q&A: Llama answers through the AI binding with the right request, and its 
     const res = await t.ask(path, 'How much is the budget? SECRET-QUESTION-TEXT');
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.match(html, /Farah said the budget is forty thousand dollars <span class="ts">\[00:02:00\]<\/span>\./); // the timestamp is shown as a muted mark
+    assert.match(html, /Alice said the budget is forty thousand dollars <span class="ts">\[00:02:00\]<\/span>\./); // the timestamp is shown as a muted mark
     assert.match(html, /can be wrong/);
     assert.equal(t.ai.chatCalls.length, 1);
     const { model, input } = t.ai.chatCalls[0];
@@ -207,7 +207,7 @@ test('Q&A: Llama answers through the AI binding with the right request, and its 
   }
   const logs = seen.join('\n');
   assert.match(logs, /qa answered by cloudflare-llama neurons=25\.50 ms=\d+/);
-  for (const forbidden of ['SECRET-QUESTION-TEXT', 'forty thousand', 'Farah said', GROQ_KEY, path.split('/t/')[1]]) assert.ok(!logs.includes(forbidden), `logged: ${forbidden}`);
+  for (const forbidden of ['SECRET-QUESTION-TEXT', 'forty thousand', 'Alice said', GROQ_KEY, path.split('/t/')[1]]) assert.ok(!logs.includes(forbidden), `logged: ${forbidden}`);
 });
 
 test('Q&A: with no usage figure the Neurons are worked out from the text, so the meter never misses an answer', async () => {

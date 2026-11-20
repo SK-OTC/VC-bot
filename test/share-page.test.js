@@ -5,10 +5,10 @@ import { renderNote, transcriptPage, notFoundPage, esc, SECURITY_HEADERS } from 
 import { CHAT_SCRIPT, CHAT_SCRIPT_HASH } from '../src/chat-script.js';
 
 const NOW = Math.floor(Date.UTC(2026, 10, 19, 12, 0, 0) / 1000);
-const base = { started_at: NOW, duration_sec: 3725, expires_at: NOW + 86_400, speakers: JSON.stringify([{ name: 'Farah' }, { name: 'Sam' }]) };
+const base = { started_at: NOW, duration_sec: 3725, expires_at: NOW + 86_400, speakers: JSON.stringify([{ name: 'Alice' }, { name: 'Sam' }]) };
 
 test('renderNote: headings, bullets, nesting, paragraphs and the byline', () => {
-  const html = renderNote(['**Summary**', '- first point [00:01:02]', '  - nested point', '      - deeper point', '- back out', '', 'A plain paragraph.', '', '**Action items**', '- Farah: send it [00:10:20] (unverified)', '', 'Summary written by Llama 3.3 70B on Cloudflare Workers AI.'].join('\n'));
+  const html = renderNote(['**Summary**', '- first point [00:01:02]', '  - nested point', '      - deeper point', '- back out', '', 'A plain paragraph.', '', '**Action items**', '- Alice: send it [00:10:20] (unverified)', '', 'Summary written by Llama 3.3 70B on Cloudflare Workers AI.'].join('\n'));
   assert.match(html, /<h2><span class="hash" aria-hidden="true">#<\/span>Summary<\/h2><ul>/);
   assert.match(html, /<li class="d0">first point <span class="ts">\[00:01:02\]<\/span><\/li>/);
   assert.match(html, /<li class="d1">nested point<\/li>/);
@@ -43,7 +43,7 @@ test('renderNote: everything from outside is escaped, in headings, bullets, para
 
 test('page: the note column has the title, a people chip, a date chip, then the sections; no duration, no transcript', () => {
   const html = transcriptPage({ ...base, summary_text: '**Summary**\n- a point [00:00:05]\n\n**Action items**\n- Sam: do it [00:00:09]', actions_text: '- Sam: do it [00:00:09]', transcript_text: 'SECRET TRANSCRIPT WORDS' });
-  assert.match(html, /<h1>Meeting summary<\/h1><div class="chips"><span class="chip"><svg[^>]*>.*?<\/svg>Farah, Sam<\/span><span class="chip"><svg[^>]*>.*?<\/svg>Nov 19<\/span><\/div>/);
+  assert.match(html, /<h1>Meeting summary<\/h1><div class="chips"><span class="chip"><svg[^>]*>.*?<\/svg>Alice, Sam<\/span><span class="chip"><svg[^>]*>.*?<\/svg>Nov 19<\/span><\/div>/);
   assert.ok(!html.includes('SECRET TRANSCRIPT WORDS'));
   assert.ok(!html.includes('01:02:05'), 'the length is not shown');
   // action items already in the summary are not repeated from actions_text
@@ -136,7 +136,7 @@ test('page: the expiry notice is always there, and speakers with odd data never 
   for (const speakers of ['not json{', '"text"', '{}', '[{"x":1}]', '[]', null, undefined]) {
     const html = transcriptPage({ ...base, speakers, summary_text: 'x' });
     assert.ok(html.includes('<h1>Meeting summary</h1>'));
-    assert.ok(!html.includes('Farah'));
+    assert.ok(!html.includes('Alice'));
   }
   assert.match(transcriptPage({ ...base, speakers: '[]', summary_text: 'x' }), /<div class="chips"><span class="chip"><svg[^>]*>.*?<\/svg>Nov 19<\/span><\/div>/, 'no people chip without speakers');
 });
@@ -161,4 +161,15 @@ test('not found page: same dark shell, one plain message, nothing about why', ()
   assert.match(html, /This link is not available/);
   assert.ok(!/<form|<textarea|<aside/.test(html));
   assert.equal(esc('<&>"\''), '&lt;&amp;&gt;&quot;&#39;');
+});
+
+test('page: the top bar stays pinned while scrolling (sticky, above the content, opaque), and the question panel sits just under it', () => {
+  const css = /<style>([\s\S]*?)<\/style>/.exec(transcriptPage({ ...base, summary_text: 'x' }, { enabled: true }))[1];
+  const top = /\.top\{([^}]*)\}/.exec(css)[1];
+  assert.match(top, /position:sticky/);
+  assert.match(top, /top:0/);
+  assert.match(top, /z-index:\d+/);
+  assert.match(top, /background:var\(--bg\)/, 'opaque, so text scrolling underneath is hidden');
+  const barHeight = Number(/height:(\d+)px/.exec(top)[1]);
+  assert.ok(/\.chat\{([^}]*)\}/.exec(css)[1].includes(`position:sticky;top:${barHeight}px;height:calc(100vh - ${barHeight}px)`));
 });

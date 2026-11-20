@@ -177,9 +177,9 @@ const TRANSCRIPT = [
   'MEETING TRANSCRIPT',
   '',
   '[00:10:00] Sam: we need to send the pricing deck to the board',
-  '[00:10:20] Farah: I can send the pricing deck by Friday',
+  '[00:10:20] Alice: I can send the pricing deck by Friday',
   '[00:10:45] Sam: great, and we decided to move the launch to March',
-  '[00:25:00] Farah: unrelated chat about lunch plans',
+  '[00:25:00] Alice: unrelated chat about lunch plans',
 ].join('\n');
 
 const SUMMARY = `**Summary**
@@ -190,7 +190,7 @@ const SUMMARY = `**Summary**
 - Hire three engineers [00:10:45]
 
 **Action items**
-- Farah: send the pricing deck [00:10:20]
+- Alice: send the pricing deck [00:10:20]
 - Sam: book the venue in Lisbon [00:10:00]
 - Unassigned: review the roadmap
 - None recorded
@@ -239,13 +239,13 @@ test('verify: needs two of the item\'s words (stems match: sending/send); never 
   assert.equal((again.text.match(/unverified/g) ?? []).length, 1);
   assert.deepEqual(verifySummary({ summaryText: '', transcriptBody: '' }), { text: '', checked: 0, flagged: 0 });
   assert.equal(verifySummary({ summaryText: null, transcriptBody: undefined }).flagged, 0);
-  assert.deepEqual(itemWords('- Farah: Send the pricing deck [00:10:20]'), ['send', 'pricing', 'deck']);
-  assert.equal(parseTranscriptLines('junk\n[00:00:05] Farah: hello\n[bad] x: y').length, 1);
+  assert.deepEqual(itemWords('- Alice: Send the pricing deck [00:10:20]'), ['send', 'pricing', 'deck']);
+  assert.equal(parseTranscriptLines('junk\n[00:00:05] Alice: hello\n[bad] x: y').length, 1);
 });
 
 // ---------- summaries with explicit output limits and the glossary ----------
 
-const GOOD = '**Summary**\n- ok [00:10:00]\n\n**Decisions**\n- None recorded\n\n**Action items**\n- Farah: send the pricing deck [00:10:20]\n\n**Open questions**\n- None';
+const GOOD = '**Summary**\n- ok [00:10:00]\n\n**Decisions**\n- None recorded\n\n**Action items**\n- Alice: send the pricing deck [00:10:20]\n\n**Open questions**\n- None';
 
 function recorder(reply = GOOD) {
   const calls = [];
@@ -303,7 +303,7 @@ test('chain: Cloudflare writes it, the checked summary ends with a footer naming
   assert.equal(r.provider, 'cloudflare-llama');
   assert.equal(r.fellBack, false);
   assert.ok(r.text.endsWith(`Summary written by ${LLAMA_LABEL}.`));
-  assert.match(r.actions, /Farah: send the pricing deck/);
+  assert.match(r.actions, /Alice: send the pricing deck/);
   assert.equal(r.checked, 1);
   assert.equal(r.flagged, 0);
   assert.equal(r.usage.neurons, 85.5);
@@ -337,7 +337,7 @@ test('chain: if every model fails there is no summary, the reasons are kept, and
 });
 
 test('chain: unmatched items are marked and counted in the result', async () => {
-  const invented = GOOD.replace('- Farah: send the pricing deck [00:10:20]', '- Zed: rebuild the data lake [00:10:20]');
+  const invented = GOOD.replace('- Alice: send the pricing deck [00:10:20]', '- Zed: rebuild the data lake [00:10:20]');
   const r = await runSummaryChain({ transcriptBody: TRANSCRIPT, providers: [provider('cloudflare-llama', LLAMA_LABEL, recorder(invented))] });
   assert.equal(r.flagged, 1);
   assert.match(r.text, /rebuild the data lake \[00:10:20\] \(unverified\)/);

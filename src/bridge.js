@@ -38,6 +38,32 @@ export function validateScriptUrl(input, { extraHosts = [] } = {}) {
 }
 
 /**
+ * A Google Meet link the script reported, or '' if it is not one. The script is each organiser's own, so what it returns is not
+ * trusted: the bot posts this link in the meeting channel and stores it, so it must really be a Meet address, not some other
+ * website made to look trusted by the bot's name. Accepted: https, host exactly meet.google.com (no port, no user name, so
+ * `meet.google.com@evil.example` and `meet.google.com.evil.example` fail), no query or fragment, and a path of one or two plain
+ * segments (abc-defg-hij). The result is rebuilt from the parsed parts, never the original text.
+ */
+export function cleanMeetLink(value) {
+  let u;
+  try {
+    u = new URL(String(value ?? '').trim());
+  } catch {
+    return '';
+  }
+  if (u.protocol !== 'https:' || u.host !== 'meet.google.com' || u.username || u.password || u.search || u.hash) return '';
+  if (!/^\/[A-Za-z0-9_-]{3,64}(?:\/[A-Za-z0-9_-]{1,64})?$/.test(u.pathname)) return '';
+  return `${u.origin}${u.pathname}`;
+}
+
+/** A successful answer with its meetLink checked: a link that is not a Meet link is dropped and `meetLinkRejected` is set. */
+export function withCheckedMeetLink(data) {
+  if (data.meetLink === undefined || data.meetLink === null || data.meetLink === '') return data;
+  const clean = cleanMeetLink(data.meetLink);
+  return clean ? { ...data, meetLink: clean } : { ...data, meetLink: '', meetLinkRejected: true };
+}
+
+/**
  * Calls the bridge. Never throws. Returns:
  *   { ok: true, ...fields from the script (account, eventId, meetLink, created, ...) }
  *   { ok: false, retryable, error }   error always says what failed and why
@@ -124,7 +150,7 @@ export function createBridgeClient({ secret, fetchImpl, timeoutMs = BRIDGE_TIMEO
     if (!data || typeof data !== 'object') {
       return { ok: false, retryable: false, error: 'Google Calendar bridge: the bridge returned an unexpected reply.' };
     }
-    if (data.ok === true) return data;
+    if (data.ok === true) return withCheckedMeetLink(data);
 
     const message = String(data.error ?? 'no details');
     if (/^busy,\s*retry/i.test(message)) {

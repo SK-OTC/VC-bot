@@ -112,7 +112,7 @@ const CSS = `
 *{box-sizing:border-box}
 html,body{margin:0}
 body{background:var(--bg);color:var(--text);font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
-.top{height:50px;display:flex;align-items:center;padding:0 16px;border-bottom:1px solid var(--line)}
+.top{position:sticky;top:0;z-index:20;height:50px;display:flex;align-items:center;padding:0 16px;background:var(--bg);border-bottom:1px solid var(--line)}
 .brand{font-size:1.15rem;font-weight:650;letter-spacing:-.01em;color:var(--title)}
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 383px;min-height:calc(100vh - 50px)}
 .layout.solo{grid-template-columns:minmax(0,1fr)}
@@ -120,6 +120,12 @@ body{background:var(--bg);color:var(--text);font:15px/1.55 system-ui,-apple-syst
 .article{max-width:600px;margin:0 auto}
 h1{font:400 2.15rem/1.18 Georgia,"Iowan Old Style","Palatino Linotype","Times New Roman",serif;color:var(--title);margin:0 0 1rem;letter-spacing:-.01em}
 .chips{display:flex;flex-wrap:wrap;gap:.5rem;margin:0 0 1.6rem}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none;background:var(--chip-text)}
+.dot.good{background:var(--ok)}
+.dot.bad{background:var(--err)}
+.status{list-style:none;padding:0;margin:.3rem 0 .6rem}
+.status li{display:flex;align-items:center;gap:.65rem;margin:0;padding:.6rem 0;border-bottom:1px solid var(--line)}
+.status .state{margin-left:auto;color:var(--title);font-size:.85rem}
 .chip{display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--chip-line);border-radius:999px;padding:.22rem .7rem;font-size:.8rem;line-height:1.4;color:var(--chip-text)}
 h2{position:relative;font-size:.95rem;font-weight:600;color:var(--text);margin:1.5rem 0 .45rem}
 .hash{position:absolute;left:-1.15rem;font-weight:400;color:var(--hash)}
@@ -128,6 +134,8 @@ li{margin:.3rem 0;color:var(--text)}
 li.d1{margin-left:1.1rem;list-style-type:circle}
 li.d2{margin-left:2.2rem;list-style-type:square}
 p{margin:.5rem 0}
+code{white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85em;color:var(--title);background:var(--send);border-radius:4px;padding:.05rem .3rem}
+.article a{color:var(--title)}
 strong{font-weight:600}
 .ts{font-variant-numeric:tabular-nums;opacity:.72}
 .unv{font-style:italic;opacity:.8}
@@ -190,11 +198,12 @@ textarea:focus-visible{outline:none}
   .thread{overflow:visible}
 }`;
 
-function shell(title, bodyHtml) {
+/** The page frame. Meeting pages are never indexed; the public privacy page passes { indexable: true }. */
+export function shell(title, bodyHtml, { indexable = false } = {}) {
   return (
     '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-    '<meta name="robots" content="noindex,nofollow,noarchive"><meta name="referrer" content="no-referrer">' +
+    (indexable ? '' : '<meta name="robots" content="noindex,nofollow,noarchive">') + '<meta name="referrer" content="no-referrer">' +
     '<meta name="color-scheme" content="dark">' +
     `<title>${esc(title)}</title><style>${CSS}</style></head><body>` +
     `<header class="top"><span class="brand">VC Bot</span></header>${bodyHtml}</body></html>`

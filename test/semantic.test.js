@@ -142,7 +142,7 @@ const payload = (over = {}) => ({
   summary_message_id: null,
   started_at: '2026-11-19T10:00:00.000Z',
   duration_sec: 600,
-  speakers: [{ name: 'Farah', speaking_sec: 300 }],
+  speakers: [{ name: 'Alice', speaking_sec: 300 }],
   engine: 'groq whisper-large-v3',
   language: 'en',
   transcript_text: longTranscript(),
@@ -157,7 +157,7 @@ function longTranscript(fact = 'the budget is forty thousand dollars', marker = 
     'MEETING TRANSCRIPT',
     '',
     ...Array.from({ length: 800 }, (_, i) => `[01:${String(i % 60).padStart(2, '0')}:00] Sam: filler sentence number ${i} about the weather and lunch plans`),
-    `[02:00:00] Farah: ${fact} ${marker}`,
+    `[02:00:00] Alice: ${fact} ${marker}`,
     ...Array.from({ length: 800 }, (_, i) => `[03:${String(i % 60).padStart(2, '0')}:00] Sam: closing filler ${i} about parking and holidays`),
   ].join('\n');
 }
@@ -195,7 +195,7 @@ test('uploading a long transcript indexes it in the background: one namespace pe
   for (let seq = 0; seq < n; seq++) assert.ok(ns.has(`abc234:${seq}`));
   // nothing but id, namespace and values goes to the index: no text, no names, no metadata
   for (const batch of t.vec.upserts) for (const v of batch) assert.deepEqual(Object.keys(v).sort(), ['id', 'namespace', 'values']);
-  assert.ok(!JSON.stringify(t.vec.upserts).includes('Farah') && !JSON.stringify(t.vec.upserts).includes('budget'));
+  assert.ok(!JSON.stringify(t.vec.upserts).includes('Alice') && !JSON.stringify(t.vec.upserts).includes('budget'));
   assert.deepEqual(t.ai.calls.map((c) => c.texts.length), [50, n - 50]); // batches of at most 50
   assert.ok(t.ai.calls.every((c) => c.model === DEFAULT_EMBEDDING_MODEL));
   assert.equal(row(t.db, 'abc234').embedded_at, NOW);
@@ -203,7 +203,7 @@ test('uploading a long transcript indexes it in the background: one namespace pe
 
 test('short transcripts are not indexed (they are sent whole), and without the bindings nothing changes', async () => {
   const short = setup();
-  await short.upload({ id: 'shrt23', transcript_text: 'MEETING TRANSCRIPT\n\n[00:00:01] Farah: the budget is forty thousand dollars' });
+  await short.upload({ id: 'shrt23', transcript_text: 'MEETING TRANSCRIPT\n\n[00:00:01] Alice: the budget is forty thousand dollars' });
   assert.equal(short.ai.calls.length, 0);
   assert.equal(short.vec.upserts.length, 0);
   assert.equal(row(short.db, 'shrt23').embedded_at, null);
@@ -401,7 +401,7 @@ test('a transcript that was never indexed (stored before this feature) is answer
 
 test('short meetings never call the embedding model, even when it is available', async () => {
   const t = setup();
-  const path = await t.upload({ id: 'shrt23', transcript_text: 'MEETING TRANSCRIPT\n\n[00:00:01] Farah: the budget is forty thousand dollars' });
+  const path = await t.upload({ id: 'shrt23', transcript_text: 'MEETING TRANSCRIPT\n\n[00:00:01] Alice: the budget is forty thousand dollars' });
   const groq = fakeGroq();
   try {
     await t.ask(path, 'how much did we spend?');

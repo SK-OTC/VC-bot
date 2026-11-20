@@ -6,6 +6,8 @@ import { createBridgeClient } from './bridge.js';
 import { runCalendarSync } from './calendar-sync.js';
 import { createDiscordClient, verifyDiscordSignature } from './discord.js';
 import { createRecorderDispatcher } from './github.js';
+import { questionsEnabled } from './ask.js';
+import { HOME_HEADERS, checkDatabase, homePage } from './home-page.js';
 import { handleHttp } from './http.js';
 import { runDueJobs } from './scheduler.js';
 
@@ -35,7 +37,11 @@ function makeRecorder(env) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (request.method === 'GET' && url.pathname === '/') return new Response('meeting-time-bot is running');
+    if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/') {
+      // The home page: whether the bot is up, and which optional features are set up. No values, names or counts are shown.
+      const status = { database: (await checkDatabase(env.DB)).ok, calendar: Boolean(makeBridge(env)), recording: Boolean(makeRecorder(env)), questions: questionsEnabled(env) };
+      return new Response(request.method === 'HEAD' ? null : homePage(status), { headers: HOME_HEADERS });
+    }
 
     // Recorder endpoints (and later the share pages). They use their own secret, not Discord's signature.
     const routed = await handleHttp(request, env, ctx, Math.floor(Date.now() / 1000));

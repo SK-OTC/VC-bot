@@ -1039,3 +1039,30 @@ test('presets remember the Meet choice, past meetings keep it, and typing meet o
   const list = await t.run(meeting('presets'));
   assert.doesNotMatch(list.data.content, /undefined/);
 });
+
+test('sync: a link that is not a Meet address is never posted in the channel or saved, and the organizer is told', async () => {
+  for (const evil of ['https://evil.example/free-gift', 'https://meet.google.com@evil.example/abc-defg-hij', 'Click: https://meet.google.com/abc-defg-hij @everyone']) {
+    const t = setup({ bridge: createFakeBridge({ script: [{ ok: true, eventId: 'x', meetLink: evil, created: true }] }) });
+    await pm(t);
+    await create(t);
+    const before = t.discord.posts.length;
+    await t.sync();
+    assert.equal(t.discord.posts.length, before, `nothing posted for ${evil}`);
+    assert.ok(!JSON.stringify(t.discord.posts).includes('evil.example'));
+    assert.equal(row(t).meet_link, null, 'not saved');
+    assert.equal(row(t).gcal_created, 1, 'the event itself is still synced');
+    const note = t.discord.followups.map((f) => f.content).join('\n');
+    assert.match(note, /not a meet\.google\.com address, so it was not posted or saved/);
+    assert.ok(!note.includes('evil.example'), 'the bad address is not repeated back either');
+  }
+});
+
+test('sync: a good Meet link is still posted and saved exactly as before', async () => {
+  const t = setup({ bridge: createFakeBridge({ script: [{ ok: true, eventId: 'x', meetLink: 'https://meet.google.com/abc-defg-hij', created: true }] }) });
+  await pm(t);
+  await create(t);
+  const before = t.discord.posts.length;
+  await t.sync();
+  assert.match(t.discord.posts[before].content, /Google Meet link for Team Sync: https:\/\/meet\.google\.com\/abc-defg-hij/);
+  assert.equal(row(t).meet_link, 'https://meet.google.com/abc-defg-hij');
+});

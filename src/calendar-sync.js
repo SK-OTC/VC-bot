@@ -10,6 +10,7 @@
 //    to Google was in flight (version check in finishSync).
 //  - Every failure is explained: the reason is stored (shown in /upcoming-meetings) and sent privately
 //    to the organizer when a private follow-up is still possible.
+import { withCheckedMeetLink } from './bridge.js';
 import { bridgeTimeZone } from './time.js';
 import {
   claimDirtyMeetings,
@@ -109,6 +110,7 @@ async function afterCreate(ctx, m, res) {
     guestCount,
     meetRequested: m.gcal_meet !== 0,
     meetLink: link,
+    meetLinkRejected: Boolean(res.meetLinkRejected),
     linkPosted,
     linkPostError,
   }));
@@ -140,7 +142,10 @@ async function processMeeting(ctx, m, summary) {
   }
 
   const guests = action !== 'cancel' && m.guest_team_key ? await listGuests(db, m.guild_id, m.guest_team_key) : [];
-  const res = await bridge.call(account.script_url, buildPayload(m, action, guests));
+  // The script is the organiser's own, so its Meet link is checked again here, where it is about to be posted and stored (the real
+  // bridge client already does this; checking twice is harmless and covers any other client).
+  const raw = await bridge.call(account.script_url, buildPayload(m, action, guests));
+  const res = raw.ok ? withCheckedMeetLink(raw) : raw;
 
   if (res.ok) {
     if (action === 'cancel') {

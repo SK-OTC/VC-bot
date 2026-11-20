@@ -41,10 +41,10 @@ const payload = (over = {}) => ({
   summary_message_id: null,
   started_at: '2026-11-19T10:00:00.000Z',
   duration_sec: 3600,
-  speakers: [{ name: 'Farah', speaking_sec: 900 }, { name: 'Sam', speaking_sec: 600 }],
+  speakers: [{ name: 'Alice', speaking_sec: 900 }, { name: 'Sam', speaking_sec: 600 }],
   engine: 'groq whisper-large-v3',
   language: 'en',
-  transcript_text: 'MEETING TRANSCRIPT\nSpeakers: Farah, Sam\n\n[00:00:05] Farah: hello everyone\n[00:00:09] Sam: shoes are the topic today',
+  transcript_text: 'MEETING TRANSCRIPT\nSpeakers: Alice, Sam\n\n[00:00:05] Alice: hello everyone\n[00:00:09] Sam: shoes are the topic today',
   summary_text: '**Summary**\n- shoes',
   actions_text: '- Sam: buy shoes [00:00:09]',
   ...over,
@@ -151,7 +151,7 @@ test('POST /api/transcripts: stores the transcript, its chunks and the search in
   const row = db.sql("SELECT * FROM transcripts WHERE id = 'abc234'")[0];
   assert.equal(row.post_channel_id, POST);
   assert.equal(row.started_at, Math.floor(Date.UTC(2026, 10, 19, 10, 0, 0) / 1000));
-  assert.deepEqual(JSON.parse(row.speakers), [{ name: 'Farah', speaking_sec: 900 }, { name: 'Sam', speaking_sec: 600 }]);
+  assert.deepEqual(JSON.parse(row.speakers), [{ name: 'Alice', speaking_sec: 900 }, { name: 'Sam', speaking_sec: 600 }]);
   assert.equal(row.summary_message_id, null);
   const hits = db.sql("SELECT rowid FROM transcript_chunks_fts WHERE transcript_chunks_fts MATCH 'shoes'");
   assert.equal(hits.length, 1);
@@ -250,7 +250,7 @@ test('nothing is logged that contains transcript text, names or the secret', asy
     await call('POST', '/api/transcripts', { body: payload({ id: 'zzzzzz' }), secret: 'wrong' });
     await call('POST', '/api/transcripts', { body: payload({ guild_id: 'bad' }) });
     // force an internal error: a database that throws
-    const broken = { prepare: () => { throw new Error(`boom ${SECRET} hello everyone Farah`.slice(0, 40)); } };
+    const broken = { prepare: () => { throw new Error(`boom ${SECRET} hello everyone Alice`.slice(0, 40)); } };
     const r = await worker.fetch(
       new Request('https://worker.example/api/transcripts', { method: 'POST', headers: { Authorization: `Bearer ${SECRET}` }, body: JSON.stringify(payload({ id: 'qqqqqq' })) }),
       { DB: broken, WORKER_SHARED_SECRET: SECRET },
@@ -262,7 +262,7 @@ test('nothing is logged that contains transcript text, names or the secret', asy
     Object.assign(console, keep);
   }
   const all = seen.join('\n');
-  for (const forbidden of [SECRET, 'hello everyone', 'shoes', 'Farah', 'Sam']) assert.ok(!all.includes(forbidden), `logged: ${forbidden}`);
+  for (const forbidden of [SECRET, 'hello everyone', 'shoes', 'Alice', 'Sam']) assert.ok(!all.includes(forbidden), `logged: ${forbidden}`);
   assert.ok(db);
 });
 
@@ -292,10 +292,10 @@ test('contract: pipeline/upload.mjs (what session.mjs uses) and the Worker agree
       summary_message_id: MSG,
       started_at: new Date(Date.UTC(2026, 10, 19, 10, 0, 0)).toISOString(),
       duration_sec: 120,
-      speakers: [{ name: 'Farah', speaking_sec: 60 }],
+      speakers: [{ name: 'Alice', speaking_sec: 60 }],
       engine: 'groq whisper-large-v3',
       language: 'en',
-      transcript_text: 'MEETING TRANSCRIPT\n\n[00:00:01] Farah: hi',
+      transcript_text: 'MEETING TRANSCRIPT\n\n[00:00:01] Alice: hi',
       summary_text: null,
       actions_text: null,
     };

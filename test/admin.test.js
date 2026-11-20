@@ -54,11 +54,11 @@ const payload = (over = {}) => ({
   summary_message_id: null,
   started_at: '2026-11-19T10:00:00.000Z',
   duration_sec: 600,
-  speakers: [{ name: 'Farah', speaking_sec: 300 }],
+  speakers: [{ name: 'Alice', speaking_sec: 300 }],
   engine: 'groq whisper-large-v3',
   language: 'en',
-  transcript_text: 'MEETING TRANSCRIPT\n\n[00:00:05] Farah: the budget is forty thousand dollars\n[00:00:20] Sam: I will send the budget',
-  summary_text: '**Summary**\n- Farah said the budget is forty thousand [00:00:05]\n\n**Action items**\n- Sam: send the budget [00:00:20]',
+  transcript_text: 'MEETING TRANSCRIPT\n\n[00:00:05] Alice: the budget is forty thousand dollars\n[00:00:20] Sam: I will send the budget',
+  summary_text: '**Summary**\n- Alice said the budget is forty thousand [00:00:05]\n\n**Action items**\n- Sam: send the budget [00:00:20]',
   actions_text: '- Sam: send the budget [00:00:20]',
   ...over,
 });
@@ -92,7 +92,7 @@ test('GET /t/<token>/admin shows the editor with the current summary, and the tr
   const html = await res.text();
   assert.match(html, /<h1>Edit the summary<\/h1>/);
   assert.match(html, /<textarea id="summary" name="summary"[^>]*>\n\*\*Summary\*\*/);
-  assert.ok(html.includes('Farah said the budget is forty thousand'));
+  assert.ok(html.includes('Alice said the budget is forty thousand'));
   assert.ok(!html.includes('the budget is forty thousand dollars'), 'transcript text is not on the page');
   assert.ok(!html.includes('Restore the generated summary'), 'nothing to restore before an edit');
   assert.ok(!/<script|<a[\s>]|<img/i.test(html));
@@ -104,7 +104,7 @@ test('POST saves an edit: the public page shows it, the generated summary and th
   const t = setup();
   const path = await stored(t);
   const before = transcriptRows(t.db);
-  const edited = '**Summary**\n- Farah (the CFO) said the budget is forty thousand [00:00:05]\n  - nested point';
+  const edited = '**Summary**\n- Alice (the CFO) said the budget is forty thousand [00:00:05]\n  - nested point';
   const res = await t.form(`${path}/admin`, { summary: edited });
   assert.equal(res.status, 303);
   assert.equal(res.headers.get('Location'), `${path}/admin?saved=1`);
@@ -112,11 +112,11 @@ test('POST saves an edit: the public page shows it, the generated summary and th
   const row = t.db.sql('SELECT summary_text, summary_edited, summary_edited_at FROM transcripts')[0];
   assert.equal(row.summary_edited, edited);
   assert.equal(row.summary_edited_at, NOW);
-  assert.ok(row.summary_text.includes('Farah said the budget is forty thousand'), 'the generated summary is kept');
+  assert.ok(row.summary_text.includes('Alice said the budget is forty thousand'), 'the generated summary is kept');
   assert.deepEqual(transcriptRows(t.db), before, 'the transcript and its chunks are byte-identical');
 
   const page = await (await t.send(path)).text();
-  assert.ok(page.includes('Farah (the CFO) said'));
+  assert.ok(page.includes('Alice (the CFO) said'));
   assert.ok(!page.includes('Sam: send the budget'), 'an edited summary replaces the whole text, including the generated action items');
   assert.match(await (await t.send(`${path}/admin?saved=1`)).text(), /<p class="ok" role="status">Saved\.<\/p>/);
 });
@@ -129,7 +129,7 @@ test('restore goes back to the generated summary', async () => {
   const res = await t.form(`${path}/admin`, { restore: '1' });
   assert.equal(res.headers.get('Location'), `${path}/admin?restored=1`);
   assert.deepEqual(t.db.sql('SELECT summary_edited, summary_edited_at FROM transcripts')[0], { summary_edited: null, summary_edited_at: null });
-  assert.ok((await (await t.send(path)).text()).includes('Farah said the budget is forty thousand'));
+  assert.ok((await (await t.send(path)).text()).includes('Alice said the budget is forty thousand'));
 });
 
 test('everything shown on the admin page is escaped, including a draft that was refused', async () => {
@@ -198,21 +198,21 @@ test('questions are answered from the transcript excerpts PLUS the edited summar
   const groq = groqSpy();
   try {
     const path = await stored(t);
-    await t.form(`${path}/admin`, { summary: '**Summary**\n- Faraz (CFO) said the budget is forty thousand [00:00:05]' });
+    await t.form(`${path}/admin`, { summary: '**Summary**\n- Alicia (CFO) said the budget is forty thousand [00:00:05]' });
     const res = await t.form(path, { q: 'Who said the budget?' });
     assert.equal(res.status, 200);
     const user = groq.calls[0].messages[1].content;
-    assert.match(user, /<summary>\n\*\*Summary\*\*\n- Faraz \(CFO\)/, 'the edited summary is what the model sees');
-    assert.ok(!user.includes('Farah said'), 'not the generated one');
+    assert.match(user, /<summary>\n\*\*Summary\*\*\n- Alicia \(CFO\)/, 'the edited summary is what the model sees');
+    assert.ok(!user.includes('Alice said'), 'not the generated one');
     assert.ok(!user.includes('<action_items>'), 'the generated action items are not sent beside an edited summary');
-    assert.match(user, /<transcript_excerpts>[\s\S]*Farah: the budget is forty thousand dollars/, 'the original transcript is still what facts come from');
+    assert.match(user, /<transcript_excerpts>[\s\S]*Alice: the budget is forty thousand dollars/, 'the original transcript is still what facts come from');
     // the prompt tells the model to take names from the summary and facts only from the excerpts
     assert.match(groq.calls[0].messages[0].content, /use its spelling of names, but take facts only from the excerpts/);
 
     await t.form(`${path}/admin`, { restore: '1' });
     await t.form(path, { q: 'Who said the budget?' });
     const restored = groq.calls[1].messages[1].content;
-    assert.match(restored, /Farah said the budget/);
+    assert.match(restored, /Alice said the budget/);
     assert.match(restored, /<action_items>/);
   } finally {
     groq.restore();

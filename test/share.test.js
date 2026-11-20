@@ -56,10 +56,10 @@ const payload = (over = {}) => ({
   summary_message_id: null,
   started_at: '2026-11-19T10:00:00.000Z',
   duration_sec: 3725,
-  speakers: [{ name: 'Farah', speaking_sec: 900 }, { name: 'Sam', speaking_sec: 600 }],
+  speakers: [{ name: 'Alice', speaking_sec: 900 }, { name: 'Sam', speaking_sec: 600 }],
   engine: 'groq whisper-large-v3',
   language: 'en',
-  transcript_text: 'MEETING TRANSCRIPT\n\n[00:00:05] Farah: hello everyone\n[00:00:09] Sam: shoes are the topic today',
+  transcript_text: 'MEETING TRANSCRIPT\n\n[00:00:05] Alice: hello everyone\n[00:00:09] Sam: shoes are the topic today',
   summary_text: '**Summary**\n- shoes launch',
   actions_text: '- Sam: buy shoes',
   ...over,
@@ -145,7 +145,7 @@ test('a valid link shows summary, action items, speakers and the length, but NOT
   const res = await t.get(new URL(share_url).pathname);
   assert.equal(res.status, 200);
   const html = await res.text();
-  for (const s of ['Meeting summary', '<h2><span class="hash" aria-hidden="true">#</span>Summary</h2>', 'shoes launch', 'buy shoes', 'Farah, Sam', 'Nov 19']) {
+  for (const s of ['Meeting summary', '<h2><span class="hash" aria-hidden="true">#</span>Summary</h2>', 'shoes launch', 'buy shoes', 'Alice, Sam', 'Nov 19']) {
     assert.ok(html.includes(s), `missing: ${s}`);
   }
   for (const s of ['hello everyone', 'shoes are the topic today', '[00:00:05]']) assert.ok(!html.includes(s), `the transcript must not be on the page: ${s}`);
@@ -214,11 +214,11 @@ test('only GET, HEAD and POST are allowed; HEAD works and does not count as a vi
   assert.equal(row.last_viewed_at, NOW);
 });
 
-test('robots.txt disallows everything', async () => {
+test('robots.txt disallows everything except the privacy page', async () => {
   const t = setup();
   const res = await t.get('/robots.txt');
   assert.equal(res.status, 200);
-  assert.equal(await res.text(), 'User-agent: *\nDisallow: /\n');
+  assert.equal(await res.text(), 'User-agent: *\nAllow: /privacy\nDisallow: /\n'); // everything except the public privacy page
 });
 
 test('HTML injection: names, speech and model output are escaped, and nothing can add a tag', async () => {

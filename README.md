@@ -128,7 +128,7 @@ with what you hear when you play both speakers' files together.
 ### Try the transcription on a recording you already have
 
 Put the `speaker-1-001.ogg`, `speaker-2-001.ogg` ... files in one folder. Optionally add `names.json`:
-`{ "speaker-1": "Farah", "speaker-2": "Sam" }`.
+`{ "speaker-1": "Bob", "speaker-2": "Sam" }`.
 
 ```
 npm ci
@@ -286,7 +286,7 @@ different licence for its hosted service; the Hugging Face model card governs th
 
 ## Tests
 
-`npm test` runs the offline tests: 495 at the time of writing, all passing. They need no network and no keys.
+`npm test` runs the offline tests: 519 at the time of writing, all passing. They need no network and no keys.
 
 * **Recorder and pipeline:** the settings parsers, pass/fail rules, the Ogg writer, the aligned tracks and overlap
   measurement, the speech-span and batch logic, transcript clean-up and merging, the rate limiters, the Groq retry rules
@@ -462,6 +462,17 @@ are cleared automatically after 20 minutes (never started) or 6 hours (running).
   recording started from a scheduled meeting has no such person, so nothing is delivered for it (it is still saved).
 * **Both off** is refused: the recording would be thrown away.
 
+### The home page and bot status: `/`
+
+`https://<your worker>/` shows a small status page in the same look as the transcript page (`src/home-page.js`). It says the
+bot is up (if the page loads, the Worker is answering commands and reminders), tests the Worker's own database with a trivial
+query (3 second limit), and shows whether each optional feature is **set up** on this Worker: Google Calendar sync
+(`BRIDGE_SECRET`), recording (`GITHUB_DISPATCH_TOKEN` and `GITHUB_REPO`) and meeting questions (the AI binding or a Groq key).
+It never shows a value, a name or a count. What it cannot tell you: Discord's own state, and whether a recording is running or
+a feature actually works end to end (it only says it is configured). The bot appears offline in Discord's member list except
+during a recording, because commands are answered over HTTP and only the recorder logs in; the page says so. The page is
+private and not indexed, and `POST /` is still Discord's command endpoint.
+
 ### Private web links for transcripts
 
 Every saved transcript gets a private page at `https://<your worker>/t/<token>` showing the summary and action items,
@@ -497,6 +508,17 @@ it), and it is what the question box is given as the meeting's summary.
 Settings in `wrangler.toml`: `SHARE_LINK_DAYS` (default 30; `0` turns the automatic links off) and optionally
 `PUBLIC_URL` (an https address, for example your own domain, to build links on instead of the Worker's address).
 
+**Privacy policy: `/privacy`.** The Worker serves a public privacy page at `https://<your worker>/privacy` (source:
+`src/privacy-page.js`). It is written from what the code does, and tests tie its main claims to the code (for example, the
+calendar table holds exactly four columns and the Apps Script never lists a calendar). Two things it says that you might not
+expect: the bot stores **no Google sign-in token** (each organiser's own Apps Script holds the permission; the bot keeps only
+the script's URL and the account address it reports), and `/calendar disconnect` deletes that stored row and stops syncing but
+does **not** revoke the script's access at Google or delete events already created. Set the contact address it shows for
+deletion requests with the **secret** `PRIVACY_CONTACT_EMAIL` (`npx wrangler secret put PRIVACY_CONTACT_EMAIL`, so it is not
+committed to the repository; it is still shown on the page). Without it, the page tells people to ask the person who runs
+the bot. `robots.txt` allows `/privacy` and nothing else, and the page is the only one without `noindex`. If you change what
+is stored or sent to Google, update the text and its date (`PRIVACY_UPDATED`).
+
 How it is protected:
 
 * **Unguessable.** A link holds 256 random bits, so it cannot be guessed. Only a hash of it is stored: a database
@@ -510,7 +532,7 @@ How it is protected:
   with `textContent`. A test recomputes the hash, so changing the script without updating `CHAT_SCRIPT_HASH` fails the tests.
   Everything from speech, speaker names, the summary and the model's answers is HTML-escaped. A strict Content-Security-Policy,
   `X-Frame-Options: DENY` and `nosniff` are sent on every response.
-* **Not indexed or cached.** `noindex` headers and meta tag, `robots.txt` disallowing everything, `Cache-Control: no-store`,
+* **Not indexed or cached.** `noindex` headers and meta tag, `robots.txt` disallowing everything (except `/privacy`), `Cache-Control: no-store`,
   and `Referrer-Policy: no-referrer` so the address is not passed on to other sites.
 * **Not logged.** Neither the Worker nor the recorder ever prints a link. The recorder sends it only in the summary message
   (to the channel, or privately when posting is off).

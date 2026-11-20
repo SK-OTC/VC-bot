@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createBridgeClient, validateScriptUrl } from '../src/bridge.js';
+import { cleanMeetLink, createBridgeClient, validateScriptUrl, withCheckedMeetLink } from '../src/bridge.js';
 import { DURATION_HELP, parseDuration, parseReminder } from '../src/duration.js';
 import { bridgeTimeZone, canonicalTimeZone } from '../src/time.js';
 
@@ -181,4 +181,60 @@ test('bridge: a redirect without a Location header is reported as such; saved UR
   assert.match(r.error, /redirect had no Location header/);
 
   assert.equal(validateScriptUrl(`${SCRIPT}?x=1#frag`).url, SCRIPT);
+});
+
+// ---------- the Meet link a script reports is not trusted ----------
+
+test('cleanMeetLink: only https://meet.google.com/<code> comes through, rebuilt from the parsed parts', () => {
+  for (const [input, want] of [
+    ['https://meet.google.com/abc-defg-hij', 'https://meet.google.com/abc-defg-hij'],
+    ['  https://meet.google.com/abc-defg-hij  ', 'https://meet.google.com/abc-defg-hij'],
+    ['HTTPS://MEET.GOOGLE.COM/abc-defg-hij', 'https://meet.google.com/abc-defg-hij'],
+    ['https://meet.google.com/lookup/abc123XYZ', 'https://meet.google.com/lookup/abc123XYZ'],
+    ['https://meet.google.com/abc-defg-hij/../../evil', 'https://meet.google.com/evil'], // the parser resolves ".." and it stays on meet.google.com
+  ]) assert.equal(cleanMeetLink(input), want, input);
+});
+
+test('cleanMeetLink: every other address, and anything that is not a bare link, is refused', () => {
+  for (const bad of [
+    undefined, null, '', '   ', 42, {},
+    'https://evil.example/abc-defg-hij',
+    'https://meet.google.com.evil.example/abc-defg-hij',
+    'https://evilmeet.google.com/abc-defg-hij',
+    'https://meet.google.com@evil.example/abc-defg-hij',
+    'https://user:pw@meet.google.com/abc-defg-hij',
+    'https://meet.google.com:8443/abc-defg-hij',
+    'http://meet.google.com/abc-defg-hij',
+    'javascript:alert(1)',
+    'data:text/html,hi',
+    '//meet.google.com/abc-defg-hij',
+    'meet.google.com/abc-defg-hij',
+    'https://meet.google.com/',
+    'https://meet.google.com',
+    'https://meet.google.com/ab',
+    'https://meet.google.com/abc-defg-hij?authuser=1',
+    'https://meet.google.com/abc-defg-hij#x',
+    'https://meet.google.com/a/b/c',
+    'https://meet.google.com/abc defg',
+    'Join here: https://meet.google.com/abc-defg-hij',
+    '<@everyone> https://meet.google.com/abc-defg-hij',
+    'https://meet.google.com/abc-defg-hij https://evil.example',
+    'https://meet.google.com/abc-defg-hij\nhttps://evil.example',
+    'https://meet.google.com/' + 'a'.repeat(200),
+  ]) assert.equal(cleanMeetLink(bad), '', String(bad));
+});
+
+test('withCheckedMeetLink: a bad link is dropped and flagged; a good one is kept; answers without one are untouched', () => {
+  assert.deepEqual(withCheckedMeetLink({ ok: true, meetLink: 'https://evil.example/x', eventId: 'e' }), { ok: true, meetLink: '', meetLinkRejected: true, eventId: 'e' });
+  assert.deepEqual(withCheckedMeetLink({ ok: true, meetLink: 'https://meet.google.com/abc-defg-hij' }), { ok: true, meetLink: 'https://meet.google.com/abc-defg-hij' });
+  const none = { ok: true, account: 'pm@gmail.com' };
+  assert.equal(withCheckedMeetLink(none), none);
+  assert.deepEqual(withCheckedMeetLink({ ok: true, meetLink: '' }), { ok: true, meetLink: '' });
+});
+
+test('bridge client: a script that returns a non-Meet link gets it dropped before anything else sees it', async () => {
+  const evil = createBridgeClient({ secret: 's', fetchImpl: appsScript({ ok: true, eventId: 'x', meetLink: 'https://evil.example/login', created: true }) });
+  assert.deepEqual(await evil.call(SCRIPT, { action: 'create' }), { ok: true, eventId: 'x', meetLink: '', meetLinkRejected: true, created: true });
+  const good = createBridgeClient({ secret: 's', fetchImpl: appsScript({ ok: true, eventId: 'x', meetLink: 'https://meet.google.com/abc-defg-hij', created: true }) });
+  assert.equal((await good.call(SCRIPT, { action: 'create' })).meetLink, 'https://meet.google.com/abc-defg-hij');
 });

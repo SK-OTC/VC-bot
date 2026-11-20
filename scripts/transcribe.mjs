@@ -6,7 +6,7 @@
 // PARAKEET_MODEL_DIR, PARAKEET_BUDGET_MIN (default 120).
 // --out names the transcript file (default transcript.txt), so two engines can be run on the same folder side by side.
 // If any glossary correction was made, <out>.glossary-fixes.json is written next to it (stays on this computer).
-// The folder may contain names.json, e.g. { "speaker-1": "Farah", "speaker-2": "Sam" }.
+// The folder may contain names.json, e.g. { "speaker-1": "Alice", "speaker-2": "Sam" }.
 import { readdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
