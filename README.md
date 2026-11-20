@@ -286,7 +286,7 @@ different licence for its hosted service; the Hugging Face model card governs th
 
 ## Tests
 
-`npm test` runs the offline tests: 437 at the time of writing, all passing. They need no network and no keys.
+`npm test` runs the offline tests: 440 at the time of writing, all passing. They need no network and no keys.
 
 * **Recorder and pipeline:** the settings parsers, pass/fail rules, the Ogg writer, the aligned tracks and overlap
   measurement, the speech-span and batch logic, transcript clean-up and merging, the rate limiters, the Groq retry rules
@@ -419,7 +419,9 @@ transcript is stored, so it needs `WORKER_URL` and `WORKER_SHARED_SECRET` to be 
 **How the page looks.** A dark page with a centred note column (title, a people chip, a date chip, then the summary with
 `#`-marked headings and nested bullets) and, when questions are on, a right-hand panel with two suggestion buttons
 ("Write tldr", "List action items") and the question box at the bottom. On a phone the panel stacks under the note. There is no
-sign-in and no script. The layout follows a screenshot of another product's note view; its name, logo and fonts are not used.
+sign-in. In the panel, **Enter sends** the question and **Shift+Enter** starts a new line; the question shows at once with a
+loading animation, and the answer is added without reloading the page. This needs one small script (see below); without
+JavaScript the same forms still work as ordinary page loads. The layout follows a screenshot of another product's note view; its name, logo and fonts are not used.
 That screenshot was **light** mode, so the light colours were sampled from its pixels and the dark ones **derived** from them
 (lightness mirrored in OKLab, `L' = 0.20 + 0.75 x (1 - L)`, hue and chroma kept; small text lifted until it reaches 4.5:1
 contrast). They are not that product's own dark colours. All colours are variables at the top of `src/share-page.js`.
@@ -440,8 +442,11 @@ How it is protected:
 * **Same "not available" page** for a wrong, expired, revoked or malformed link, so nobody can probe for real ones.
 * **Expires and can be revoked.** Links stop at their expiry time; `/unshare-transcript` stops them at once.
   At most 10 live links per transcript. Deleting a transcript deletes its links.
-* **The page has no scripts, images or links, and its one form posts only back to itself.** Everything from speech,
-  speaker names, the summary and the model's answers is HTML-escaped. A strict Content-Security-Policy,
+* **The page has no images or links, one tiny script, and its forms post only back to itself.** The script
+  (`src/chat-script.js`) is allowed by the Content-Security-Policy **only by its SHA-256 hash**, so no other script can run
+  even if some text were ever not escaped; it may only fetch from the page's own address, and it puts reader text on the page
+  with `textContent`. A test recomputes the hash, so changing the script without updating `CHAT_SCRIPT_HASH` fails the tests.
+  Everything from speech, speaker names, the summary and the model's answers is HTML-escaped. A strict Content-Security-Policy,
   `X-Frame-Options: DENY` and `nosniff` are sent on every response.
 * **Not indexed or cached.** `noindex` headers and meta tag, `robots.txt` disallowing everything, `Cache-Control: no-store`,
   and `Referrer-Policy: no-referrer` so the address is not passed on to other sites.

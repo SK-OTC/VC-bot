@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderNote, transcriptPage, notFoundPage, esc } from '../src/share-page.js';
+import { createHash } from 'node:crypto';
+import { renderNote, transcriptPage, notFoundPage, esc, SECURITY_HEADERS } from '../src/share-page.js';
+import { CHAT_SCRIPT, CHAT_SCRIPT_HASH } from '../src/chat-script.js';
 
 const NOW = Math.floor(Date.UTC(2026, 10, 19, 12, 0, 0) / 1000);
 const base = { started_at: NOW, duration_sec: 3725, expires_at: NOW + 86_400, speakers: JSON.stringify([{ name: 'Farah' }, { name: 'Sam' }]) };
@@ -62,7 +64,39 @@ test('page: it is dark, has the top bar without any sign-in, and uses no outside
   assert.match(html, /<header class="top"><span class="brand">VC Bot<\/span><\/header>/);
   assert.ok(!/sign.?in|log.?in|granola/i.test(html), 'no sign-in and no other product name');
   assert.ok(!/<img|url\(|@import|@font-face|https?:\/\//i.test(html), 'no images, no outside files, no addresses');
-  assert.ok(!/<script|<a[\s>]|<iframe|<link/i.test(html));
+  assert.ok(!/<a[\s>]|<iframe|<link/i.test(html));
+  assert.ok(!/<script[^>]*\ssrc=/i.test(html), 'no script is loaded from anywhere');
+});
+
+test('page: the single script is the one the CSP allows by hash; a page without questions has no script at all', () => {
+  const html = transcriptPage({ ...base, summary_text: '**Summary**\n- x' }, { enabled: true, maxChars: 500 });
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  assert.equal((html.match(/<script/g) ?? []).length, 1, 'exactly one script tag');
+  assert.equal(scripts.length, 1);
+  assert.equal(scripts[0][1], CHAT_SCRIPT);
+  const hash = 'sha256-' + createHash('sha256').update(scripts[0][1], 'utf8').digest('base64');
+  assert.equal(CHAT_SCRIPT_HASH, hash, `CHAT_SCRIPT_HASH is out of date: it should be '${hash}'`);
+  const csp = SECURITY_HEADERS['Content-Security-Policy'];
+  assert.match(csp, new RegExp(`script-src '${hash.replace(/[+/=]/g, '\\$&')}'(;|$)`));
+  assert.ok(!/unsafe-inline[^;]*script|script-src[^;]*unsafe/.test(csp), 'no unsafe-inline for scripts');
+  assert.match(csp, /connect-src 'self'/);
+  assert.ok(!/<script/i.test(transcriptPage({ ...base, summary_text: 'x' }, { enabled: false })));
+  assert.ok(!/<script/i.test(notFoundPage()));
+});
+
+test('script: Enter sends, Shift+Enter is left alone, results go in with textContent, nothing is written with innerHTML', () => {
+  assert.match(CHAT_SCRIPT, /e\.key !== 'Enter' \|\| e\.shiftKey \|\| e\.isComposing/);
+  assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/.test(CHAT_SCRIPT));
+  assert.ok(!/localStorage|sessionStorage|document\.cookie/.test(CHAT_SCRIPT));
+  assert.ok(!/\\/.test(CHAT_SCRIPT), 'no backslashes: the template literal text and the browser text must be identical');
+});
+
+test('page: no square focus box on the question box; the smooth and loading styles are there', () => {
+  const css = /<style>([\s\S]*?)<\/style>/.exec(transcriptPage({ ...base, summary_text: 'x' }, { enabled: true }))[1];
+  assert.match(css, /textarea:focus-visible\{outline:none\}/);
+  assert.match(css, /\.ask:focus-within\{border-color:/, 'the rounded border still shows focus');
+  assert.match(css, /\.loading span\{[^}]*animation:pulse/);
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\)/);
 });
 
 test('page: the question panel has the box, the send button and exactly two suggestion buttons, all plain forms', () => {
@@ -88,7 +122,7 @@ test('page: the question and answer appear in the panel, the answer is marked up
   const html = transcriptPage({ ...base, summary_text: '**Summary**\n- x' }, { enabled: true, maxChars: 500, question: `what ${evil}?`, answer: `**Short** answer ${evil} [00:02:00]\n- one\n- two (unverified)` });
   assert.match(html, /<p class="q">what &lt;script&gt;alert\(1\)&lt;\/script&gt;\?<\/p>/);
   assert.match(html, /<div class="a"><p><strong>Short<\/strong> answer &lt;script&gt;alert\(1\)&lt;\/script&gt; <span class="ts">\[00:02:00\]<\/span><\/p><ul><li class="d0">one<\/li>/);
-  assert.ok(!html.includes('<script>'));
+  assert.ok(!html.includes('<script>alert') && (html.match(/<script/g) ?? []).length === 1, 'only our own script, never the answer text');
   assert.match(html, /can be wrong/);
   const err = transcriptPage({ ...base, summary_text: 'x' }, { enabled: true, maxChars: 500, question: 'my question', error: 'Q&A is paused until midnight UTC.' });
   assert.match(err, /<p class="err">Q&amp;A is paused until midnight UTC\.<\/p>/);

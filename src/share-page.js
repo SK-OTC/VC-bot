@@ -1,7 +1,8 @@
 // The read-only web page behind a share link, and the strict headers every response from /t/ carries.
 // Security rules for this file:
 //  * Every piece of text that came from speech, a Discord name, a language model or a reader is HTML-escaped first.
-//  * The page has no scripts, no images and no links. Its only forms post back to the same address (CSP form-action 'self').
+//  * The page has no images and no links. Its only forms post back to the same address (CSP form-action 'self'). The one
+//    script (src/chat-script.js, only when questions are on) is allowed by its hash alone and nothing depends on it.
 //  * The transcript itself is never put on the page: readers get the summary and can ask questions about the meeting.
 //  * The only markup that is not escaped text is what this file writes itself: tags, a few fixed icons, and the three
 //    inline marks made by `inline()` below, which wrap text that has already been escaped.
@@ -13,6 +14,8 @@
 // These are not Granola's own dark colours (they are not visible in the screenshot); change the variables to adjust.
 // Granola's name, logo and fonts are not used.
 
+import { CHAT_SCRIPT, CHAT_SCRIPT_HASH } from './chat-script.js';
+
 export const SECURITY_HEADERS = {
   'Content-Type': 'text/html; charset=utf-8',
   'Cache-Control': 'private, no-store, max-age=0',
@@ -20,7 +23,8 @@ export const SECURITY_HEADERS = {
   'Referrer-Policy': 'no-referrer',
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
-  'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  // Scripts only by hash (the one in chat-script.js); fetch only to this same address (the answer is fetched without a reload).
+  'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; script-src '${CHAT_SCRIPT_HASH}'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`,
   'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Resource-Policy': 'same-origin',
@@ -132,24 +136,43 @@ strong{font-weight:600}
 .fine{margin-top:2.2rem}
 .chat{background:var(--panel);border-left:1px solid var(--line);position:sticky;top:50px;height:calc(100vh - 50px);display:flex;flex-direction:column}
 .thread{flex:1;overflow-y:auto;padding:1.25rem 1.25rem .5rem}
-.q{margin:0 0 .6rem;color:var(--chip-text);font-size:.85rem}
+.thread{scroll-behavior:smooth}
+.thread>*{animation:rise .28s ease-out both}
+.q{margin:.9rem 0 .7rem auto;width:fit-content;max-width:92%;background:var(--send);color:var(--title);font-size:.88rem;line-height:1.45;padding:.5rem .85rem;border-radius:14px 14px 4px 14px;overflow-wrap:anywhere}
+.a{margin:0 0 .5rem}
 .a p,.a li{color:var(--text)}
 .a h2{margin-top:1rem}
 .err{color:var(--err);font-size:.9rem}
+.loading{display:flex;gap:.35rem;align-items:center;height:1.6rem;margin:.3rem 0 .6rem .2rem}
+.loading span{width:7px;height:7px;border-radius:50%;background:var(--chip-text);animation:pulse 1.2s ease-in-out infinite}
+.loading span:nth-child(2){animation-delay:.18s}
+.loading span:nth-child(3){animation-delay:.36s}
+@keyframes pulse{0%,70%,100%{opacity:.25;transform:translateY(0) scale(.85)}35%{opacity:1;transform:translateY(-3px) scale(1)}}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .composer{padding:.5rem 1.1rem 1.1rem}
 .chips-row{display:flex;flex-wrap:wrap;gap:.35rem 1rem;margin:0 0 .8rem .3rem}
 .chips-row form{margin:0}
-.suggest{display:inline-flex;align-items:center;gap:.4rem;background:none;border:0;padding:.1rem 0;font:inherit;font-size:.78rem;color:var(--suggest);cursor:pointer}
+.suggest{display:inline-flex;align-items:center;gap:.4rem;background:none;border:0;padding:.1rem 0;font:inherit;font-size:.78rem;color:var(--suggest);cursor:pointer;transition:color .15s ease}
 .suggest:hover{color:var(--title)}
 .slash{display:inline-grid;place-items:center;width:.95rem;height:.95rem;border:1px solid var(--chip-line);border-radius:3px;font-size:.62rem;line-height:1}
-.ask{display:flex;align-items:center;gap:.5rem;border:1px solid var(--input-line);border-radius:999px;background:var(--panel);padding:.35rem .4rem .35rem 1rem}
+.ask{display:flex;align-items:center;gap:.5rem;border:1px solid var(--input-line);border-radius:999px;background:var(--panel);padding:.35rem .4rem .35rem 1rem;transition:border-color .18s ease,box-shadow .18s ease}
 textarea{flex:1;min-width:0;border:0;outline:0;resize:none;background:transparent;color:var(--title);font:inherit;font-size:.9rem;line-height:1.4;padding:.35rem 0;max-height:7rem;field-sizing:content}
 textarea::placeholder{color:var(--placeholder);opacity:1}
-.send{flex:none;width:32px;height:32px;display:grid;place-items:center;border:0;border-radius:50%;background:var(--send);color:var(--placeholder);cursor:pointer}
+.send{flex:none;width:32px;height:32px;display:grid;place-items:center;border:0;border-radius:50%;background:var(--send);color:var(--placeholder);cursor:pointer;transition:background-color .18s ease,color .18s ease,transform .12s ease,opacity .18s ease}
 .send:hover{color:var(--title)}
+.send:active{transform:scale(.92)}
+.ask:has(textarea:not(:placeholder-shown)) .send{background:var(--title);color:var(--bg)}
+.busy .send{opacity:.45;cursor:default}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 :focus-visible{outline:2px solid var(--title);outline-offset:2px}
+textarea:focus-visible{outline:none}
 .ask:focus-within{border-color:var(--chip-text)}
+@media (prefers-reduced-motion:reduce){
+  .thread{scroll-behavior:auto}
+  .thread>*{animation:none}
+  .loading span{animation:none;opacity:.6}
+  .ask,.send,.suggest{transition:none}
+}
 .missing{max-width:30rem;margin:18vh auto 0;padding:0 24px}
 .missing h1{font-size:1.8rem}
 @media (max-width:900px){
@@ -229,6 +252,6 @@ export function transcriptPage(t, qa = { enabled: false }) {
     `<div class="chips-row">${suggestions}</div>` +
     '<form class="ask" method="post" autocomplete="off"><label class="sr" for="q">Ask about the meeting</label>' +
     `<textarea id="q" name="q" rows="1" maxlength="${max}" required placeholder="Ask about the meeting...">${esc(qa.error ? qa.question ?? '' : '')}</textarea>` +
-    `<button class="send" type="submit" aria-label="Ask">${ARROW_UP}</button></form></div></aside>`;
+    `<button class="send" type="submit" aria-label="Ask">${ARROW_UP}</button></form></div></aside><script>${CHAT_SCRIPT}</script>`;
   return shell('Meeting summary', `<div class="layout">${note}${chat}</div>`);
 }
