@@ -12,9 +12,9 @@ import { fetchRemoteTeam } from './recorder/remote-config.mjs';
 import { shouldStop, trackEmpty, recordingNickname, batchAttachments } from './recorder/stop.mjs';
 import { finishSession } from './recorder/session.mjs';
 import { AlignedTrack } from './track.mjs';
-import { GroqEngine } from './pipeline/groq.mjs';
-import { LocalEngine } from './pipeline/local.mjs';
-import { ChatClient } from './pipeline/summary.mjs';
+import { planEngines } from './pipeline/engines.mjs';
+import { buildSummaryProviders } from './pipeline/providers.mjs';
+import { fetchSummaryBudget } from './pipeline/budget.mjs';
 
 const log = (m) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${m}`);
 const OUT_DIR = process.env.OUT_DIR || 'recordings';
@@ -55,6 +55,9 @@ async function main() {
   log(remote.found ? 'recording settings: from /setup-recording' : `recording settings: from TEAM_CONFIG (${remote.reason})`);
   mkdirSync(OUT_DIR, { recursive: true });
   log(`node ${process.version}; team config found; limit ${cfg.maxMinutes} min`);
+  // Transcription engines, in ENGINE_ORDER (default: Parakeet first, Groq Whisper as the fallback). Parakeet starts loading its
+  // model now, in the background, so it is ready by the time the meeting ends.
+  const enginePlan = planEngines({ env: process.env, language: cfg.team.language, groqKey: cfg.groqKey, log });
 
   const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates], allowedMentions: NOMENTIONS });
   const ready = new Promise((r) => client.once(Events.ClientReady, r));
@@ -203,6 +206,7 @@ async function main() {
   if (stopInfo.empty || speakers.size === 0) {
     await retry(() => target.send({ content: `Recording ended: ${stopInfo.reason}. No speech was captured, so there is no transcript.`, allowedMentions: NOMENTIONS })).catch(() => {});
     await client.destroy();
+    await enginePlan.close();
     await reportFinish(process.env, 'done', 'no speech captured');
     return rmSync(OUT_DIR, { recursive: true, force: true });
   }
@@ -216,11 +220,11 @@ async function main() {
   log(`${speakerList.length} speaker(s), ${speakerList.reduce((n, s) => n + s.files.length, 0)} file(s); transcribing`);
 
   // ---- engines -------------------------------------------------------------------------------
-  const engine = cfg.groqKey
-    ? new GroqEngine({ apiKey: cfg.groqKey, model: process.env.GROQ_MODEL || 'whisper-large-v3', language: cfg.team.language })
-    : { name: 'none', transcribe: async () => { throw Object.assign(new Error('GROQ_API_KEY is not set'), { kind: 'auth' }); } };
-  const fallbackEngine = process.env.USE_LOCAL_FALLBACK === '0' ? null : new LocalEngine({ language: cfg.team.language });
-  const chat = cfg.groqKey ? new ChatClient({ apiKey: cfg.groqKey, model: process.env.LLM_MODEL || 'openai/gpt-oss-120b' }) : null;
+  const { engine, fallbackEngine } = await enginePlan.resolve();
+  // Summary models: Cloudflare Llama 3.3 first, Groq gpt-oss as the fallback (SUMMARY_MODEL_ORDER). Ask the Worker whether
+  // today's Cloudflare Neuron budget for summaries has room; if it cannot be reached, Cloudflare is simply tried.
+  const budget = await fetchSummaryBudget({ workerUrl: cfg.workerUrl, secret: cfg.workerSecret });
+  const providers = buildSummaryProviders({ env: process.env, cloudflareAllowed: !budget.known || budget.allowed, log });
 
   const reply = (replyTo) => (replyTo ? { reply: { messageReference: replyTo, failIfNotExists: false } } : {});
   const io = {
@@ -247,7 +251,8 @@ async function main() {
       cfg,
       engine,
       fallbackEngine,
-      chat,
+      budgetSec: cfg.parakeetBudgetMin * 60,
+      providers,
       io,
       log,
       sessionId: cfg.sessionId,
@@ -271,6 +276,7 @@ async function main() {
     await retry(() => target.send({ content: `Transcription failed (${String(e.message).slice(0, 150)}). ${rescued ? 'The audio was saved to the backup channel so it can be transcribed later.' : 'The audio could not be saved and is gone.'}`, allowedMentions: NOMENTIONS })).catch(() => {});
     rmSync(OUT_DIR, { recursive: true, force: true });
     await client.destroy();
+    await enginePlan.close();
     await reportFinish(process.env, 'failed', 'transcription failed');
     process.exit(3);
   }
@@ -279,6 +285,7 @@ async function main() {
 
   rmSync(OUT_DIR, { recursive: true, force: true });
   await client.destroy();
+  await enginePlan.close();
   await reportFinish(process.env, 'done'); // already 'done' if the transcript was stored; this covers "storage not configured"
   process.exit(0);
 }

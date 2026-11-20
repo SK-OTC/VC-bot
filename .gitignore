@@ -28,3 +28,7 @@ names.json
 
 # leftover copy of the Worker project (merged into the root); never commit it
 /meeting-time-bot/
+
+# Python bytecode (from running the worker tests)
+__pycache__/
+*.pyc

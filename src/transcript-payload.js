@@ -41,6 +41,35 @@ export function validateTranscriptPayload(body) {
   check('summary_text', nullableStr(body.summary_text, MAX_SUMMARY_CHARS));
   check('actions_text', nullableStr(body.actions_text, MAX_SUMMARY_CHARS));
 
+  // Optional: the glossary corrections made to the text (kept in the stored record only).
+  let fixes = null;
+  if (body.glossary_fixes !== undefined && body.glossary_fixes !== null) {
+    const f = body.glossary_fixes;
+    const ok =
+      Array.isArray(f) &&
+      f.length <= 500 &&
+      f.every((x) => x && typeof x === 'object' && isStr(x.from, 80, 1) && isStr(x.to, 80, 1) && typeof x.t === 'number' && Number.isFinite(x.t) && x.t >= 0 && x.t <= DAY_SEC && ['listed', 'fuzzy', 'case'].includes(x.kind));
+    check('glossary_fixes', ok);
+    if (ok) fixes = f.map((x) => ({ from: x.from, to: x.to, t: x.t, kind: x.kind }));
+  }
+
+  // Optional: what writing the summary cost, so the Worker's daily Neuron meter can count it.
+  let aiUsage = null;
+  if (body.ai_usage !== undefined && body.ai_usage !== null) {
+    const u = body.ai_usage;
+    const ok =
+      typeof u === 'object' &&
+      !Array.isArray(u) &&
+      (u.provider === null || u.provider === undefined || isStr(u.provider, 60)) &&
+      typeof u.neurons === 'number' && Number.isFinite(u.neurons) && u.neurons >= 0 && u.neurons <= 200_000 &&
+      (u.prompt_tokens === undefined || isInt(u.prompt_tokens, 0, 10_000_000)) &&
+      (u.completion_tokens === undefined || isInt(u.completion_tokens, 0, 10_000_000)) &&
+      (u.requests === undefined || isInt(u.requests, 0, 100_000)) &&
+      (u.fell_back === undefined || typeof u.fell_back === 'boolean');
+    check('ai_usage', ok);
+    if (ok) aiUsage = { provider: u.provider ?? null, neurons: u.neurons, fell_back: Boolean(u.fell_back) };
+  }
+
   if (bad.length) return { ok: false, bad };
   return {
     ok: true,
@@ -60,6 +89,8 @@ export function validateTranscriptPayload(body) {
       transcript_text: body.transcript_text,
       summary_text: body.summary_text || null,
       actions_text: body.actions_text || null,
+      ai_usage: aiUsage,
+      glossary_fixes: fixes,
     },
   };
 }

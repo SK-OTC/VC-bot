@@ -17,7 +17,7 @@ function intIn(value, fallback, min, max, name, problems) {
 
 /**
  * TEAM_CONFIG is JSON: { "<voice channel id>": { "name": "Team A", "transcriptChannelId": "...",
- *   "backupChannelId": "..." (optional), "glossary": "VibeCut, CapCut" (optional), "language": "en" (optional) } }
+ *   "backupChannelId": "..." (optional), "glossary": "LiteCut, CapCut" (optional), "language": "en" (optional) } }
  * Only the entry for the channel being recorded is used, so teams are never mixed.
  */
 export function parseSessionConfig(env, remote = null) {
@@ -59,6 +59,8 @@ export function parseSessionConfig(env, remote = null) {
   const emptyGraceMinutes = intIn(env.EMPTY_GRACE_MINUTES, 3, 1, 30, 'EMPTY_GRACE_MINUTES', problems);
   const silenceStopMinutes = intIn(env.SILENCE_STOP_MINUTES, 20, 2, 120, 'SILENCE_STOP_MINUTES', problems);
   const readyTimeoutSec = intIn(env.READY_TIMEOUT_SEC, 30, 5, 120, 'READY_TIMEOUT_SEC', problems);
+  // How long transcription may take before the rest is handed to the fallback engine (the job limit is 345 minutes).
+  const parakeetBudgetMin = intIn(env.PARAKEET_BUDGET_MIN, 120, 5, 300, 'PARAKEET_BUDGET_MIN', problems);
 
   const workerUrl = String(env.WORKER_URL ?? '').trim().replace(/\/+$/, '');
   if (workerUrl && !/^https:\/\//.test(workerUrl)) problems.push('WORKER_URL must start with https://');
@@ -80,6 +82,7 @@ export function parseSessionConfig(env, remote = null) {
     emptyGraceMinutes,
     silenceStopMinutes,
     readyTimeoutSec,
+    parakeetBudgetMin,
     workerUrl,
     workerSecret: String(env.WORKER_SHARED_SECRET ?? '').trim(),
     groqKey: String(env.GROQ_API_KEY ?? '').trim(),

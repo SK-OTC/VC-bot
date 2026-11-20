@@ -31,8 +31,10 @@ concurrency:
 jobs:
   record:
     runs-on: ubuntu-latest
-    # Up to 15 min waiting + 150 min meeting + transcription. GitHub's own limit is 6 hours.
-    timeout-minutes: 300
+    # Up to 15 min waiting + 150 min meeting + up to 120 min transcription budget (PARAKEET_BUDGET_MIN) + summary and
+    # upload. GitHub's own limit is 6 hours (360 min), so 345 leaves a 15 minute margin. If the job is cancelled at the
+    # limit the recorder leaves WITHOUT a transcript and the audio on the runner is lost, so keep MAX_MINUTES at 150.
+    timeout-minutes: 345
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -49,21 +51,39 @@ jobs:
           ffmpeg -version | head -n 1
       - name: Offline checks
         run: npm test
-      - name: Prepare the backup transcriber (installed in the background while recording)
+      - name: Install Parakeet, the main transcriber (onnx-asr, pinned to the version it was tested with)
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"
-          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/venv/bin/pip" install -q "onnx-asr[cpu,hub]==0.12.0"
+      - name: Parakeet worker checks
+        run: '"$RUNNER_TEMP/venv/bin/python" -m unittest pipeline.test_parakeet_worker'
+      # The model (about 660 MB) is downloaded from Hugging Face at run time. The cache key is the hash of
+      # pipeline/parakeet-model.json, which pins the exact model revision, so changing the revision refreshes the cache.
+      - name: Cache the Parakeet model
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache/parakeet-v2-int8
+          key: parakeet-${{ hashFiles('pipeline/parakeet-model.json') }}
       - name: Record, transcribe and post
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Summary models: Cloudflare Llama 3.3 first, Groq as the fallback. The token needs "Workers AI" permission only.
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # A repository VARIABLE (Settings > Secrets and variables > Actions > Variables), not a secret: variables are
+          # public in a public repo, so it holds only model names. Empty means the default: cloudflare-llama,groq-gpt-oss
+          SUMMARY_MODEL_ORDER: ${{ vars.SUMMARY_MODEL_ORDER }}
           TEAM_CONFIG: ${{ secrets.TEAM_CONFIG }}
           WORKER_URL: ${{ secrets.WORKER_URL }}
           WORKER_SHARED_SECRET: ${{ secrets.WORKER_SHARED_SECRET }}
           CHANNEL_ID: ${{ inputs.channel_id }}
           SESSION_ID: ${{ inputs.session_id }}
           MAX_MINUTES: ${{ inputs.max_minutes }}
-        run: |
-          # Start installing faster-whisper (about 500 MB model downloads on first use). Output is discarded.
-          "$RUNNER_TEMP/venv/bin/pip" install -q faster-whisper >/dev/null 2>&1 &
-          node record.mjs
+          # Transcription engines. Repository VARIABLES (public in a public repo, so names and numbers only, never secrets).
+          # ENGINE_ORDER empty means the default "parakeet,groq"; set "groq,parakeet" to flip. PARAKEET_BUDGET_MIN empty means 120.
+          ENGINE_ORDER: ${{ vars.ENGINE_ORDER }}
+          PARAKEET_BUDGET_MIN: ${{ vars.PARAKEET_BUDGET_MIN }}
+          PARAKEET_PYTHON: ${{ runner.temp }}/venv/bin/python
+          PARAKEET_MODEL_DIR: ${{ github.workspace }}/.cache/parakeet-v2-int8
+        run: node record.mjs

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runPipeline } from '../pipeline/run.mjs';
 import { displayNames, buildHeader, formatTranscript, hhmmss } from '../pipeline/transcript.mjs';
-import { summarize, splitMessage } from '../pipeline/summary.mjs';
+import { runSummaryChain, splitMessage } from '../pipeline/summary.mjs';
 import { uploadTranscript, shortId } from '../pipeline/upload.mjs';
 import { batchAttachments } from './stop.mjs';
 
@@ -14,12 +14,13 @@ import { batchAttachments } from './stop.mjs';
  * io: { postTranscript({content, file:{name, data}}) -> {messageId}, postText(text) -> {messageId}, postBackup(content, files) }
  * Returns { ok, id, notes[] } and never throws for a model, storage or backup problem: a transcript that exists must be delivered.
  */
-export async function finishSession({ speakers, offsetSec, startedAt, cfg, engine, fallbackEngine, chat, io, log = () => {}, sessionId = '', voiceChannelId, guildId }) {
+export async function finishSession({ speakers, offsetSec, startedAt, cfg, engine, fallbackEngine, budgetSec = null, chat, providers = null, io, log = () => {}, sessionId = '', voiceChannelId, guildId }) {
   const notes = [];
   const work = mkdtempSync(path.join(tmpdir(), 'rec-'));
   try {
     const names = displayNames(speakers.map((s) => ({ label: s.label, name: s.name })));
     const { lines, failures, stats } = await runPipeline({
+      budgetSec,
       speakers: speakers.map((s) => ({ label: s.label, files: s.files })),
       engine,
       fallbackEngine,
@@ -28,7 +29,7 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
       log,
     });
     const lengthSec = Math.max(0, stats.lengthSec - offsetSec);
-    const header = buildHeader({ startedAt, lengthSec, speakers: stats.speakers, names, engines: stats.engines, fallbackBatches: stats.fallbackBatches, failedBatches: stats.failedBatches });
+    const header = buildHeader({ startedAt, lengthSec, speakers: stats.speakers, names, engines: stats.engines, labels: stats.labels, primaryName: stats.primaryName, fallbackName: stats.fallbackName, fallbackBatches: stats.fallbackBatches, failedBatches: stats.failedBatches });
     const text = formatTranscript({ lines, failures, names, offsetSec, header });
     const body = text.slice(header.length);
     const id = shortId();
@@ -40,9 +41,11 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
     const heading = `**${cfg.team.name} meeting transcript** · ${when} UTC · ${hhmmss(lengthSec)} · ID \`${id}\``;
     const posted = await io.postTranscript({ content: heading, file: { name: `transcript-${id}.txt`, data: Buffer.from(text, 'utf8') } });
 
-    // 2. Summary and action items, posted under the transcript.
-    let summary = { ok: false, reason: 'no language model is configured' };
-    if (chat && body.trim()) summary = await summarize({ transcriptBody: body, chat, log });
+    // 2. Summary and action items, posted under the transcript. Models are tried in order (Cloudflare Llama, then Groq).
+    const chain = providers ?? (chat ? [{ name: chat.name ?? 'groq-gpt-oss', label: chat.label ?? 'the language model', chat }] : []);
+    let summary = { ok: false, reason: 'no language model is configured', usage: { neurons: 0, promptTokens: 0, completionTokens: 0, requests: 0 } };
+    if (chain.length && body.trim()) summary = await runSummaryChain({ transcriptBody: body, glossary: cfg.team.glossary, providers: chain, log });
+    if (summary.ok) log(`summary: written by ${summary.provider}${summary.fellBack ? ' after a fallback' : ''}; ${summary.flagged} of ${summary.checked} items unverified`);
     let summaryMessageId = null;
     if (summary.ok) {
       const parts = splitMessage(summary.text, 1900);
@@ -84,11 +87,26 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
           started_at: new Date(startedAt).toISOString(),
           duration_sec: Math.round(lengthSec),
           speakers: stats.speakers.map((s) => ({ name: names[s.label], speaking_sec: Math.round(s.speechSec) })),
-          engine: [...stats.engines].join(', '),
+          engine: [...stats.engines].map((n) => stats.labels[n] ?? n).join(', '),
+          // Every glossary correction (original, replacement, time): kept in the stored record only, never posted or logged.
+          glossary_fixes: stats.glossaryFixes.slice(0, 500).map((f) => ({ from: f.from.slice(0, 80), to: f.to.slice(0, 80), t: Math.max(0, Math.round((f.t - offsetSec) * 10) / 10), kind: f.kind })),
           language: cfg.team.language,
           transcript_text: text,
           summary_text: summary.ok ? summary.text : null,
           actions_text: summary.ok ? summary.actions : null,
+          // What the summary cost, so the Worker's daily Neuron meter counts it (also when a fallback model finished the job).
+          ...(chain.length
+            ? {
+                ai_usage: {
+                  provider: summary.ok ? summary.provider : null,
+                  neurons: Math.round((summary.usage?.neurons ?? 0) * 10_000) / 10_000,
+                  prompt_tokens: summary.usage?.promptTokens ?? 0,
+                  completion_tokens: summary.usage?.completionTokens ?? 0,
+                  requests: summary.usage?.requests ?? 0,
+                  fell_back: Boolean(summary.fellBack),
+                },
+              }
+            : {}),
         },
       });
       if (!stored.ok) {

@@ -147,7 +147,7 @@ test('a valid link shows summary, action items, speakers and the length, but NOT
   const res = await t.get(new URL(share_url).pathname);
   assert.equal(res.status, 200);
   const html = await res.text();
-  for (const s of ['Meeting summary', '<strong>Summary</strong>', 'shoes launch', 'buy shoes', 'Farah, Sam', '01:02:05', '2026-11-19 10:00 UTC']) {
+  for (const s of ['Meeting summary', '<h2><span class="hash" aria-hidden="true">#</span>Summary</h2>', 'shoes launch', 'buy shoes', 'Farah, Sam', 'Nov 19']) {
     assert.ok(html.includes(s), `missing: ${s}`);
   }
   for (const s of ['hello everyone', 'shoes are the topic today', '[00:00:05]']) assert.ok(!html.includes(s), `the transcript must not be on the page: ${s}`);
@@ -240,7 +240,7 @@ test('HTML injection: names, speech and model output are escaped, and nothing ca
   assert.ok(html.includes('<strong>bold</strong>'));
   // the only tags in the body are the ones the page itself writes
   const tags = new Set([...html.matchAll(/<\/?([a-z0-9]+)/gi)].map((m) => m[1].toLowerCase()));
-  for (const tag of tags) assert.ok(['!doctype', 'html', 'head', 'meta', 'title', 'style', 'body', 'main', 'h1', 'h2', 'p', 'section', 'strong'].includes(tag), `unexpected tag <${tag}>`);
+  for (const tag of tags) assert.ok(['!doctype', 'html', 'head', 'meta', 'title', 'style', 'body', 'header', 'main', 'aside', 'div', 'span', 'h1', 'h2', 'p', 'ul', 'li', 'strong', 'form', 'label', 'textarea', 'button', 'svg', 'circle', 'path', 'rect'].includes(tag), `unexpected tag <${tag}>`);
   assert.ok(!/<a[\s>]/i.test(html) && !/<form/i.test(html) && !/<iframe/i.test(html));
   assert.equal(esc(`<>&"'`), '&lt;&gt;&amp;&quot;&#39;');
 });

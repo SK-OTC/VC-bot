@@ -64,8 +64,8 @@ test('cleanSegments: drops empty, no-speech, repetition and phantom lines, keeps
 
 test('buildPrompt: respects the caps and handles empty input', () => {
   assert.equal(buildPrompt(''), '');
-  const p = buildPrompt('VibeCut, CapCut');
-  assert.equal(p, 'Names and terms: VibeCut, CapCut.');
+  const p = buildPrompt('LiteCut, CapCut');
+  assert.equal(p, 'Names and terms: LiteCut, CapCut.');
   assert.ok(buildPrompt(Array.from({ length: 500 }, (_, i) => `term${i}`).join(',')).length <= 700);
 });
 

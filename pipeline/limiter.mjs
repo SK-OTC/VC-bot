@@ -65,6 +65,14 @@ export function whisperLimiter({ requestsPerMinute = 18, audioPerHour = 6500, au
   });
 }
 
+/** Cloudflare Workers AI chat: a conservative 20 requests a minute (Neurons are budgeted separately, in the Worker). */
+export function cfLimiter({ requestsPerMinute = 20, ...rest } = {}) {
+  return new RateLimiter({
+    limits: [{ name: 'requests/min', windowMs: 60_000, cap: requestsPerMinute, units: () => 1 }],
+    ...rest,
+  });
+}
+
 /** Chat models: requests per minute, tokens per minute, tokens per day. */
 export function chatLimiter({ requestsPerMinute = 25, tokensPerMinute = 6500, tokensPerDay = 180_000, ...rest } = {}) {
   return new RateLimiter({

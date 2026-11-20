@@ -189,7 +189,7 @@ export const COMMANDS = [
       opt(T.STRING, 'name', 'Team or meeting name shown in the transcript heading (default: the voice channel name)', { max_length: 50 }),
       opt(T.CHANNEL, 'backup_channel', 'Optional private text channel for the audio backup', { channel_types: TEXT_ONLY }),
       opt(T.STRING, 'language', 'Spoken language, a 2-letter code such as en, es, fr (default: en)', { max_length: 3 }),
-      opt(T.STRING, 'glossary', 'Words to spell correctly, separated by commas, e.g. product names', { max_length: 500 }),
+      opt(T.STRING, 'glossary', 'Correct spellings, comma-separated. Add mishearings with =, e.g. LiteCut=Lite Cut|Lite cut', { max_length: 500 }),
     ],
   },
   {

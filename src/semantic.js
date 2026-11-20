@@ -9,6 +9,8 @@
 //  * Failures are logged by error type only, never with text, questions or ids from the request.
 //  * Only long transcripts are indexed (short ones are sent whole, so an index would add cost for nothing).
 import { FULL_TRANSCRIPT_CHARS, transcriptSize } from './ask.js';
+import { addNeurons } from './meter.js';
+import { embeddingNeurons, estimateTokens } from './neurons.js';
 
 export const DEFAULT_EMBEDDING_MODEL = '@cf/baai/bge-base-en-v1.5'; // 768 dimensions: create the index with --dimensions=768
 export const TOP_SEMANTIC = 8;
@@ -26,6 +28,16 @@ function withTimeout(promise, ms) {
     timer = setTimeout(() => reject(new Error('timeout')), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/** Embeddings use the same daily Neuron allowance as the chat models. The binding reports no usage, so this is an estimate from the published rate. */
+async function meterEmbedding(env, texts, nowSec) {
+  try {
+    const tokens = texts.reduce((n, t) => n + estimateTokens(t), 0);
+    await addNeurons(env.DB, 'embed', embeddingNeurons(modelOf(env), tokens), nowSec);
+  } catch {
+    // a missed meter update only means the meter under-counts a little
+  }
 }
 
 const logFailure = (what, e) => console.error(`${what}: ${String(e?.name ?? 'Error').slice(0, 40)}`);
@@ -53,6 +65,7 @@ export async function embedTranscript(env, transcriptId, nowSec) {
     for (let i = 0; i < chunks.length; i += EMBED_BATCH) {
       const slice = chunks.slice(i, i + EMBED_BATCH);
       const vectors = await embed(env, slice.map((c) => c.text));
+      await meterEmbedding(env, slice.map((c) => c.text), nowSec);
       await withTimeout(
         env.VECTORIZE.upsert(slice.map((c, j) => ({ id: `${transcriptId}:${c.seq}`, namespace: transcriptId, values: vectors[j] }))),
         20_000,
@@ -93,10 +106,11 @@ export async function embedIfDue(env, transcriptId, nowSec) {
  * The chunk numbers closest in meaning to the question, best first, for THIS transcript only. Returns [] on any problem
  * (the keyword search then carries the answer alone).
  */
-export async function semanticHits(env, transcriptId, question) {
+export async function semanticHits(env, transcriptId, question, nowSec = Math.floor(Date.now() / 1000)) {
   try {
     if (!embeddingEnabled(env)) return [];
     const [vector] = await embed(env, [question]);
+    await meterEmbedding(env, [question], nowSec);
     const res = await withTimeout(
       env.VECTORIZE.query(vector, { topK: TOP_SEMANTIC, namespace: transcriptId, returnValues: false, returnMetadata: 'none' }),
       8000,

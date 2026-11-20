@@ -1,5 +1,6 @@
 // HTTP endpoints the GitHub recorder calls. All need `Authorization: Bearer <WORKER_SHARED_SECRET>`.
 //   GET  /api/sessions/<session id>/stop    -> { "stop": true | false }        (polled every 15 s while recording)
+//   GET  /api/ai-budget                     -> { summary_allowed, neurons_today, summary_cap }  (the recorder asks before choosing a model)
 //   GET  /api/sessions/<session id>/config  -> the /setup-recording settings for that session's voice channel (404 if none)
 //   POST /api/sessions/<session id>/finish  -> { "ok": true }                  (the job ended: { status: "done" | "failed", error? })
 //   POST /api/transcripts                   -> stores a finished transcript    (called once, at the end); the answer
@@ -10,6 +11,7 @@ import { SESSION_ID_RE, endSession, getRecordingSetup, getSession, readStopFlag,
 import { validateTranscriptPayload } from './transcript-payload.js';
 import { configuredDays, createShareLink, linkUrl, publicOrigin } from './share-store.js';
 import { embedIfDue } from './semantic.js';
+import { addNeurons, neuronsToday, softCaps } from './meter.js';
 
 const MAX_BODY_CHARS = 1_000_000; // about 1 MB, as in the spec
 const HEADERS = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
@@ -22,9 +24,10 @@ export async function handleApi(request, env, url, nowSec, ctx = null) {
   const finishMatch = /^\/api\/sessions\/([^/]+)\/finish$/.exec(url.pathname);
   const configMatch = /^\/api\/sessions\/([^/]+)\/config$/.exec(url.pathname);
   const isTranscripts = url.pathname === '/api/transcripts';
-  if (!stopMatch && !finishMatch && !configMatch && !isTranscripts) return respond({ error: 'not found' }, 404);
+  const isBudget = url.pathname === '/api/ai-budget';
+  if (!stopMatch && !finishMatch && !configMatch && !isTranscripts && !isBudget) return respond({ error: 'not found' }, 404);
 
-  const method = stopMatch || configMatch ? 'GET' : 'POST';
+  const method = stopMatch || configMatch || isBudget ? 'GET' : 'POST';
   if (request.method !== method) {
     return new Response('Method Not Allowed', { status: 405, headers: { Allow: method, 'Cache-Control': 'no-store' } });
   }
@@ -38,6 +41,7 @@ export async function handleApi(request, env, url, nowSec, ctx = null) {
     if (stopMatch) return await stopFlag(env, stopMatch[1], nowSec);
     if (finishMatch) return await finishFromRecorder(request, env, finishMatch[1], nowSec);
     if (configMatch) return await sessionConfig(env, configMatch[1]);
+    if (isBudget) return await aiBudget(env, nowSec);
     return await storeTranscript(request, env, url, nowSec, ctx);
   } catch (e) {
     // Never log the message: an exception message can contain anything, including request data. Only the
@@ -52,6 +56,16 @@ async function stopFlag(env, rawId, nowSec) {
   // An unknown or malformed session answers "keep going": a stray id must never stop a real recording.
   if (!SESSION_ID_RE.test(rawId)) return respond({ stop: false });
   return respond({ stop: await readStopFlag(env.DB, rawId, nowSec) });
+}
+
+/**
+ * Does today's Cloudflare Neuron budget have room for a summary? The recorder asks before choosing a model, because only the
+ * Worker can see the account-wide meter. Numbers only.
+ */
+async function aiBudget(env, nowSec) {
+  const today = await neuronsToday(env.DB, nowSec);
+  const cap = softCaps(env).summary;
+  return respond({ day: today.day, neurons_today: Math.round(today.total * 100) / 100, summary_cap: cap, summary_allowed: today.total < cap });
 }
 
 /**
@@ -124,6 +138,14 @@ async function storeTranscript(request, env, url, nowSec, ctx) {
     // Every stored transcript gets a private web link, returned once (only its hash is kept) so the recorder can post
     // it in the team's private channel. SHARE_LINK_DAYS=0 turns this off. A failure here never loses the transcript.
     const out = { ok: true, id: t.id, chunks };
+    // The summary's cost goes on the daily Neuron meter (the recorder spent it on Cloudflare, even if a fallback model finished the job).
+    if (t.ai_usage?.neurons > 0) {
+      try {
+        await addNeurons(env.DB, 'summary', t.ai_usage.neurons, nowSec);
+      } catch {
+        // the transcript is saved; a missed meter update only means the meter under-counts a little
+      }
+    }
     // Long transcripts are indexed for meaning-based search after the answer is sent, so the recorder is not kept waiting.
     // If that fails, the first question about the meeting tries again (see src/semantic.js).
     if (ctx?.waitUntil) ctx.waitUntil(embedIfDue(env, t.id, nowSec));

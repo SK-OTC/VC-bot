@@ -54,14 +54,14 @@ const SETUP = { voice_channel: VC, transcript_channel: TXT };
 
 test('setup: saves the settings, checks the channels, posts a confirmation where transcripts will go', async () => {
   const t = setup();
-  const r = await t.run(slash('setup-recording', { ...SETUP, backup_channel: BAK, name: 'Design team', language: 'ES', glossary: 'VibeCut,  CapCut\n' }));
+  const r = await t.run(slash('setup-recording', { ...SETUP, backup_channel: BAK, name: 'Design team', language: 'ES', glossary: 'LiteCut,  CapCut\n' }));
   assert.ok(isPrivate(r));
   assert.match(r.data.content, /Saved the recording setup/);
   assert.match(r.data.content, new RegExp(`<#${TXT}>`));
   const [s] = rows(t.db);
   assert.deepEqual(
     { v: s.voice_channel_id, g: s.guild_id, n: s.name, t: s.transcript_channel_id, b: s.backup_channel_id, gl: s.glossary, l: s.language, by: s.created_by },
-    { v: VC, g: GUILD, n: 'Design team', t: TXT, b: BAK, gl: 'VibeCut, CapCut', l: 'es', by: ADMIN },
+    { v: VC, g: GUILD, n: 'Design team', t: TXT, b: BAK, gl: 'LiteCut, CapCut', l: 'es', by: ADMIN },
   );
   // a real message went to each channel, with no mentions allowed
   assert.deepEqual(t.discord.posts.map((p) => p.channelId), [BAK, TXT]); // the team-facing announcement goes last
@@ -397,7 +397,7 @@ test('fetchRemoteTeam: retries a flaky Worker, gives up politely, never throws, 
 
 test('contract: the recorder\'s fetchRemoteTeam and the Worker agree, end to end from /setup-recording', async () => {
   const t = setup();
-  await t.run(slash('setup-recording', { ...SETUP, name: 'Design team', glossary: 'VibeCut' }));
+  await t.run(slash('setup-recording', { ...SETUP, name: 'Design team', glossary: 'LiteCut' }));
   addSession(t.db, 'sess1234');
   const call = api(t.db);
   const fetchImpl = (url, init) => call('GET', new URL(url).pathname, init.headers.Authorization.replace('Bearer ', ''));
@@ -405,7 +405,7 @@ test('contract: the recorder\'s fetchRemoteTeam and the Worker agree, end to end
   const remote = await fetchRemoteTeam(env, { fetchImpl });
   assert.equal(remote.found, true);
   const cfg = parseSessionConfig(env, remote.team); // no TEAM_CONFIG at all
-  assert.deepEqual(cfg.team, { name: 'Design team', transcriptChannelId: TXT, backupChannelId: '', glossary: 'VibeCut', language: 'en' });
+  assert.deepEqual(cfg.team, { name: 'Design team', transcriptChannelId: TXT, backupChannelId: '', glossary: 'LiteCut', language: 'en' });
   assert.equal(cfg.sessionId, 'sess1234');
 });
 

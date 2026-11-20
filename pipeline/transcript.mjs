@@ -41,15 +41,30 @@ export function mergeLines(lines, { joinGap = 2 } = {}) {
   return out;
 }
 
-export function buildHeader({ startedAt, lengthSec, speakers, names, engines, fallbackBatches = 0, failedBatches = 0 }) {
+/**
+ * The "Transcribed with" line, naming every engine that was used, for example
+ *   Transcribed with Parakeet TDT 0.6B v2; 3 parts re-done with Groq Whisper.
+ * labels: engine name -> the name to show. primaryName / fallbackName: the engines the run started with.
+ */
+export function engineLine({ engines, labels = {}, primaryName = null, fallbackName = null, fallbackBatches = 0 }) {
+  const show = (n) => labels[n] ?? n;
+  const used = [...engines];
+  if (!used.length) return 'Transcribed with: none';
+  if (!fallbackBatches) return `Transcribed with ${used.map(show).join(', ')}.`;
+  const parts = `${fallbackBatches} part${fallbackBatches === 1 ? '' : 's'}`;
+  if (primaryName && fallbackName && used.includes(primaryName)) return `Transcribed with ${show(primaryName)}; ${parts} re-done with ${show(fallbackName)}.`;
+  if (primaryName && fallbackName) return `Transcribed with ${show(fallbackName)} (${show(primaryName)} could not be used).`;
+  return `Transcribed with ${used.map(show).join(', ')} (backup engine used for ${parts}).`;
+}
+
+export function buildHeader({ startedAt, lengthSec, speakers, names, engines, labels = {}, primaryName = null, fallbackName = null, fallbackBatches = 0, failedBatches = 0 }) {
   const when = startedAt ? new Date(startedAt).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : 'unknown time';
   const who = speakers.map((s) => `${names[s.label]} (${mmss(s.speechSec)} speaking)`).join(', ') || 'nobody detected';
-  const engine = [...engines].join(', ') || 'none';
   const lines = [
     'MEETING TRANSCRIPT',
     `Recorded: ${when}, length ${hhmmss(lengthSec)}`,
     `Speakers: ${who}`,
-    `Transcribed with: ${engine}${fallbackBatches ? ` (backup engine used for ${fallbackBatches} part(s))` : ''}`,
+    engineLine({ engines, labels, primaryName, fallbackName, fallbackBatches }),
   ];
   if (failedBatches) lines.push(`WARNING: ${failedBatches} part(s) could not be transcribed. They are marked in the text.`);
   lines.push(

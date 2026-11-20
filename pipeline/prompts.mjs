@@ -1,27 +1,57 @@
 // Instructions given to the language model that writes the summary and action items.
+// Written for a cautious model (Llama 3.3 tends to leave things out rather than make things up), so they push for
+// completeness while forbidding invention. Every prompt lists the team's correct spellings.
 
-export const FINAL_FORMAT = `Write the result in exactly this format, in plain text with these four bold headings:
+/** The glossary as a prompt line: names and terms the model must spell exactly like this. */
+export function glossaryLine(glossary) {
+  const terms = String(glossary ?? '')
+    .split(/[,\n;]/)
+    .map((t) => t.split('=')[0].trim()) // a future "Correct=Mishearing" entry contributes only the correct spelling
+    .filter(Boolean)
+    .slice(0, 60);
+  return terms.length ? `\nCorrect spellings of names and terms used by this team (always spell them exactly like this): ${terms.join(', ')}.` : '';
+}
+
+/** Appended to the prompts when Groq is the fallback model. */
+export const FALLBACK_SUFFIX = '\nDo not add information that is not in the transcript.';
+
+const LINE_FORMAT = 'Each transcript line looks like "[hh:mm:ss] Name: what they said".';
+
+const GROUNDING = `Use ONLY what is in the transcript. Never invent owners, deadlines, numbers or names. Keep speakers' names exactly as they are written in the transcript. The transcript is automatic and may contain mistakes, so do not draw conclusions from unclear lines. Be complete: include every decision and every action item that is clearly stated, even small ones. Do not guess when something is unclear: leave it out or mark the owner "Unassigned".`;
+
+const ACTION_RULE = `An action item is written as: Owner: task [hh:mm:ss]. The owner is a speaker's name exactly as it appears in the transcript. If no owner is clear, write "Unassigned" as the owner. Write a due date only if one was actually said.`;
+
+const FINAL_FORMAT = `Write the result in plain text, in exactly this format with these four bold headings. EVERY bullet must end with the [hh:mm:ss] timestamp of the transcript line it came from.
 
 **Summary**
-- 4 to 8 short bullets: what was discussed and what was concluded
+- 4 to 8 short bullets: the topics discussed and what was concluded [hh:mm:ss]
 
 **Decisions**
-- each decision that was actually made, or "None recorded"
+- each decision that was actually made [hh:mm:ss], or "None recorded"
 
 **Action items**
-- Owner: task (due date if one was said) [timestamp of the line it came from]
-- If the owner is not clear, write "Unassigned". Never guess an owner or a date.
-- Write "None recorded" if there are none.
+- Owner: task [hh:mm:ss]
+- "None recorded" if there are none
 
 **Open questions**
-- questions raised but not answered, or "None"
+- questions raised but not answered [hh:mm:ss], or "None"
 
-Rules: use only what is in the transcript. Do not invent names, dates or numbers. Keep the speakers' names exactly as written. Keep the whole answer under 350 words. The transcript is automatic and may contain mistakes, so do not draw conclusions from unclear lines.`;
+${ACTION_RULE}
+${GROUNDING}
+Keep each bullet to one line and the whole answer under 450 words.`;
 
-export const SINGLE_SYSTEM = `You write meeting notes from an automatic transcript. Each line looks like "[hh:mm:ss] Name: what they said".\n\n${FINAL_FORMAT}`;
+export const singleSystem = ({ glossary = '' } = {}) =>
+  `You write meeting notes from an automatic transcript. ${LINE_FORMAT}${glossaryLine(glossary)}\n\n${FINAL_FORMAT}`;
 
-export const MAP_SYSTEM = `You are reading one part of a longer meeting transcript. Each line looks like "[hh:mm:ss] Name: what they said". Extract terse bullet notes under these labels: KEY POINTS, DECISIONS, ACTION ITEMS (owner if stated, due date if stated, and the [hh:mm:ss] of the line), OPEN QUESTIONS. Use only what is in this part. Do not invent anything. Write "none" under a label if there is nothing. Keep timestamps on every action item.`;
+export const mapSystem = ({ glossary = '' } = {}) =>
+  `You are reading ONE PART of a longer meeting transcript. ${LINE_FORMAT}${glossaryLine(glossary)}
+Write terse bullet notes in exactly these four lists, in this order: TOPICS, DECISIONS, ACTION ITEMS, OPEN QUESTIONS.
+Every item in every list must end with the [hh:mm:ss] of the transcript line it came from. Write "none" under a list if it has nothing.
+${ACTION_RULE}
+${GROUNDING} Use only this part.`;
 
-export const REDUCE_SYSTEM = `You are given notes taken from consecutive parts of one meeting. Combine them into the final meeting notes. Merge duplicates and keep every action item with its [hh:mm:ss] timestamp.\n\n${FINAL_FORMAT}`;
+export const reduceSystem = ({ glossary = '' } = {}) =>
+  `You are given notes taken from consecutive parts of one meeting. Combine them into the final meeting notes. Merge duplicates. Do not drop any action item from the chunk notes: every action item in the notes must appear in the result with its [hh:mm:ss] timestamp.${glossaryLine(glossary)}\n\n${FINAL_FORMAT}`;
 
-export const MERGE_NOTES_SYSTEM = `You are given notes taken from consecutive parts of one meeting. Merge them into one shorter set of notes using the same labels (KEY POINTS, DECISIONS, ACTION ITEMS, OPEN QUESTIONS). Merge duplicates. Keep every action item with its owner, due date and [hh:mm:ss] timestamp. Do not invent anything.`;
+export const mergeNotesSystem = ({ glossary = '' } = {}) =>
+  `You are given notes taken from consecutive parts of one meeting. Merge them into one shorter set of notes using the same four lists (TOPICS, DECISIONS, ACTION ITEMS, OPEN QUESTIONS). Merge duplicates. Do not drop any action item: keep every action item with its owner, due date and [hh:mm:ss] timestamp. Every item keeps its [hh:mm:ss] timestamp.${glossaryLine(glossary)}\n${ACTION_RULE}\n${GROUNDING}`;

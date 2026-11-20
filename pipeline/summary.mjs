@@ -1,12 +1,18 @@
-// Summary and action items from a finished transcript, using a free chat model on Groq.
-// Free chat models allow only a few thousand tokens per minute, so a long meeting is summarised in pieces
-// (about 4,500 tokens each) and the notes are then combined. This is slow but stays within the limits.
+// Summary and action items from a finished transcript.
+// A long meeting is summarised in pieces (about 4,500 tokens each) and the notes are then combined, which keeps every
+// request small. The model is chosen by runSummaryChain: Cloudflare Llama 3.3 first, Groq gpt-oss as the fallback.
 import { groqRequest, EngineError } from './groq.mjs';
 import { chatLimiter } from './limiter.mjs';
-import { SINGLE_SYSTEM, MAP_SYSTEM, REDUCE_SYSTEM, MERGE_NOTES_SYSTEM } from './prompts.mjs';
+import { FALLBACK_SUFFIX, mapSystem, mergeNotesSystem, reduceSystem, singleSystem } from './prompts.mjs';
+import { verifySummary } from './verify.mjs';
+import { estimateTokens as estimate } from '../src/neurons.js';
 
 // Conservative: real text averages about 4 characters per token, we assume 3.5 so we never go over.
-export const estimateTokens = (s) => Math.ceil(String(s).length / 3.5);
+export const estimateTokens = estimate;
+
+// Explicit output limits (B3): a chunk's notes, and the final summary.
+export const CHUNK_OUTPUT_TOKENS = 700;
+export const FINAL_OUTPUT_TOKENS = 1200;
 
 /** Splits transcript text into pieces of at most maxTokens, always on line boundaries. */
 export function chunkText(text, maxTokens = 4500) {
@@ -33,16 +39,21 @@ export function chunkText(text, maxTokens = 4500) {
   return chunks.filter((c) => c.trim());
 }
 
+/** Groq chat (the fallback summary model, and what transcribe.mjs uses). */
 export class ChatClient {
-  constructor({ apiKey, model = 'openai/gpt-oss-120b', limiter = chatLimiter(), maxTokens = 2000, ...rest } = {}) {
+  constructor({ apiKey, model = 'openai/gpt-oss-120b', limiter = chatLimiter(), maxTokens = 2000, reasoningEffort = '', ...rest } = {}) {
     if (!apiKey) throw new EngineError('auth', 'GROQ_API_KEY is missing');
-    Object.assign(this, { apiKey, model, limiter, maxTokens, rest });
+    Object.assign(this, { apiKey, model, limiter, maxTokens, reasoningEffort, rest });
     this.requests = 0;
+    this.name = 'groq-gpt-oss';
+    this.label = 'GPT-OSS 120B on Groq';
+    this.usage = { requests: 0, promptTokens: 0, completionTokens: 0, neurons: 0 }; // Groq spends no Cloudflare Neurons
   }
 
-  async complete(system, user) {
+  async complete(system, user, { maxTokens } = {}) {
     this.requests++;
-    const tokens = estimateTokens(system) + estimateTokens(user) + this.maxTokens;
+    const out = maxTokens ?? this.maxTokens;
+    const tokens = estimateTokens(system) + estimateTokens(user) + out;
     const json = await groqRequest({
       path: '/chat/completions',
       apiKey: this.apiKey,
@@ -53,7 +64,8 @@ export class ChatClient {
         JSON.stringify({
           model: this.model,
           temperature: 0.2,
-          max_completion_tokens: this.maxTokens,
+          max_completion_tokens: out,
+          ...(this.reasoningEffort ? { reasoning_effort: this.reasoningEffort } : {}),
           messages: [
             { role: 'system', content: system },
             { role: 'user', content: user },
@@ -61,6 +73,9 @@ export class ChatClient {
         }),
       ...this.rest,
     });
+    this.usage.requests++;
+    this.usage.promptTokens += Number(json?.usage?.prompt_tokens) || 0;
+    this.usage.completionTokens += Number(json?.usage?.completion_tokens) || 0;
     const text = json?.choices?.[0]?.message?.content;
     if (typeof text !== 'string' || !text.trim()) throw new EngineError('bad_request', 'the model returned an empty answer');
     return text.trim();
@@ -74,39 +89,92 @@ export function splitSections(text) {
 }
 
 /**
- * transcriptBody: the transcript lines without the header.
+ * transcriptBody: the transcript lines without the header. glossary: the team's correct spellings (every prompt lists them).
+ * systemSuffix: extra text appended to every prompt (used for the Groq fallback).
  * Returns { ok: true, text, actions, requests } or { ok: false, reason }. Never throws for model problems:
  * a missing summary must not stop the transcript from being posted.
  */
-export async function summarize({ transcriptBody, chat, log = () => {}, singleMaxTokens = 5000, chunkTokens = 4500 }) {
+export async function summarize({ transcriptBody, chat, glossary = '', systemSuffix = '', log = () => {}, singleMaxTokens = 5000, chunkTokens = 4500 }) {
+  const sys = (build) => build({ glossary }) + systemSuffix;
+  const ask = (system, user, maxTokens) => chat.complete(system, user, { maxTokens });
   try {
     if (!String(transcriptBody).trim()) return { ok: false, reason: 'the transcript is empty' };
     let text;
     if (estimateTokens(transcriptBody) <= singleMaxTokens) {
-      text = await chat.complete(SINGLE_SYSTEM, transcriptBody);
+      text = await ask(sys(singleSystem), transcriptBody, FINAL_OUTPUT_TOKENS);
     } else {
       const parts = chunkText(transcriptBody, chunkTokens);
       let notes = [];
       for (let i = 0; i < parts.length; i++) {
         log(`summary: notes for part ${i + 1}/${parts.length}`);
-        notes.push(await chat.complete(MAP_SYSTEM, parts[i]));
+        notes.push(await ask(sys(mapSystem), parts[i], CHUNK_OUTPUT_TOKENS));
       }
       // If the notes are still too long for one request, merge them in groups first.
       while (estimateTokens(notes.join('\n\n')) > singleMaxTokens && notes.length > 1) {
         const groups = chunkText(notes.join('\n\n---\n\n'), chunkTokens);
         if (groups.length >= notes.length) break; // cannot shrink further
         const merged = [];
-        for (const g of groups) merged.push(await chat.complete(MERGE_NOTES_SYSTEM, g));
+        for (const g of groups) merged.push(await ask(sys(mergeNotesSystem), g, CHUNK_OUTPUT_TOKENS));
         notes = merged;
       }
       log('summary: combining notes');
-      text = await chat.complete(REDUCE_SYSTEM, notes.join('\n\n---\n\n'));
+      text = await ask(sys(reduceSystem), notes.join('\n\n---\n\n'), FINAL_OUTPUT_TOKENS);
     }
     return { ok: true, text, actions: splitSections(text).actions, requests: chat.requests };
   } catch (e) {
     return { ok: false, reason: `${e.kind || 'error'}: ${e.message}`.slice(0, 200) };
   }
 }
+
+const sumUsage = (providers) =>
+  providers.reduce(
+    (t, p) => ({
+      requests: t.requests + (p.chat.usage?.requests ?? 0),
+      promptTokens: t.promptTokens + (p.chat.usage?.promptTokens ?? 0),
+      completionTokens: t.completionTokens + (p.chat.usage?.completionTokens ?? 0),
+      neurons: t.neurons + (p.chat.usage?.neurons ?? 0),
+    }),
+    { requests: 0, promptTokens: 0, completionTokens: 0, neurons: 0 },
+  );
+
+/**
+ * Tries each provider in order until one writes the summary: [{ name, label, chat, systemSuffix? }].
+ * A provider that fails part-way (a 429, a 5xx, a timeout, an empty answer) is abandoned and the next one starts over
+ * from the beginning. The finished summary is checked against the transcript (unmatched items are marked "(unverified)",
+ * never deleted) and ends with a footer naming the model that wrote it.
+ * Never throws. Logs counts and model names only, never transcript text.
+ */
+export async function runSummaryChain({ transcriptBody, glossary = '', providers, log = () => {} }) {
+  const attempts = [];
+  for (const p of providers) {
+    log(`summary: trying ${p.name}`);
+    const r = await summarize({ transcriptBody, chat: p.chat, glossary, systemSuffix: p.systemSuffix ?? '', log });
+    attempts.push({ provider: p.name, ok: r.ok, reason: r.ok ? undefined : r.reason });
+    if (!r.ok) {
+      log(`summary: ${p.name} failed (${r.reason})`);
+      continue;
+    }
+    const checked = verifySummary({ summaryText: r.text, transcriptBody });
+    if (checked.flagged) log(`summary: ${checked.flagged} of ${checked.checked} decisions and action items could not be matched to the transcript (marked unverified)`);
+    const text = `${checked.text.trimEnd()}\n\nSummary written by ${p.label}.`;
+    return {
+      ok: true,
+      text,
+      actions: splitSections(text).actions,
+      requests: r.requests,
+      provider: p.name,
+      label: p.label,
+      fellBack: attempts.length > 1,
+      checked: checked.checked,
+      flagged: checked.flagged,
+      attempts,
+      usage: sumUsage(providers),
+    };
+  }
+  return { ok: false, reason: attempts.at(-1)?.reason ?? 'no summary model is configured', attempts, usage: sumUsage(providers) };
+}
+
+export { FALLBACK_SUFFIX };
 
 /** Splits long text into messages under Discord's 2,000-character limit, on line boundaries. */
 export function splitMessage(text, max = 1900) {

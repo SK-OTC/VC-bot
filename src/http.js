@@ -4,7 +4,9 @@
 //   /t/<token>      a private meeting page: summary plus "ask a question" (the token in the address is the only key)
 //   /robots.txt     tells well-behaved crawlers to stay away from everything
 import { handleApi } from './api.js';
-import { MAX_QUESTION_CHARS, askGroq, buildMessages, cleanQuestion, joinContext, questionLimits, questionsEnabled, selectContext, takeQuestionSlot } from './ask.js';
+import { MAX_QUESTION_CHARS, answerQuestion, buildMessages, cleanQuestion, joinContext, questionLimits, questionsEnabled, selectContext, takeQuestionSlot, usableQaProviders } from './ask.js';
+import { neuronsToday, softCaps } from './meter.js';
+import { secondsUntilMidnightUtc } from './neurons.js';
 import { embedIfDue, semanticHits } from './semantic.js';
 import { SECURITY_HEADERS, notFoundPage, transcriptPage } from './share-page.js';
 import { TOKEN_RE, findSharedTranscript, recordView } from './share-store.js';
@@ -16,7 +18,7 @@ const plain = (status, text) => new Response(text, { status, headers: { ...SECUR
 // Fixed messages only: nothing from the model, the database or the request is ever put in an error line.
 const MESSAGES = {
   empty: 'Type a question first.',
-  busyTotal: 'Questions are paused for today because the daily limit has been reached. Please try again tomorrow.',
+  paused: 'Q&A is paused until midnight UTC.',
   busyLink: "You've asked a lot of questions in a short time. Please wait a little and try again.",
   nothing: "I don't have any transcript text for this meeting, so I can't answer questions about it.",
   modelBusy: 'The assistant is busy right now. Please try again in a minute.',
@@ -70,19 +72,25 @@ async function handleQuestion(request, env, ctx, url, nowSec, t, enabled, view) 
   const asked = cleanQuestion(new URLSearchParams(body).get('q'));
   if (!asked.ok) return page(view({ error: asked.reason }), 400);
 
+  // The account-wide limit is the day's Cloudflare Neuron meter (the free allowance is shared with the summaries). Over the
+  // Q&A cap, questions pause until the meter resets at 00:00 UTC. Checked before a question is counted against the link.
+  if (usableQaProviders(env).includes('cloudflare-llama') && (await neuronsToday(env.DB, nowSec)).total >= softCaps(env).qa) {
+    return page(view({ question: asked.question, error: MESSAGES.paused }), 429, { 'Retry-After': String(secondsUntilMidnightUtc(nowSec)) });
+  }
+
   const slot = await takeQuestionSlot(env.DB, t.token_hash, nowSec, questionLimits(env));
   if (!slot.ok) {
-    return page(view({ question: asked.question, error: slot.scope === 'total' ? MESSAGES.busyTotal : MESSAGES.busyLink }), 429, { 'Retry-After': String(slot.retryAfterSec) });
+    return page(view({ question: asked.question, error: MESSAGES.busyLink }), 429, { 'Retry-After': String(slot.retryAfterSec) });
   }
 
   // Hybrid retrieval: keyword search always; meaning-based search too when this transcript is in the vector index.
   // A transcript that is not indexed yet is answered with keywords alone this time and indexed in the background.
   let semantic = [];
-  if (t.embedded_at) semantic = await semanticHits(env, t.id, asked.question);
+  if (t.embedded_at) semantic = await semanticHits(env, t.id, asked.question, nowSec);
   else if (ctx?.waitUntil) ctx.waitUntil(embedIfDue(env, t.id, nowSec));
   const pieces = await selectContext(env.DB, t.id, asked.question, { semantic });
   if (!pieces.length) return page(view({ question: asked.question, error: MESSAGES.nothing }), 404);
-  const result = await askGroq(env, buildMessages({ summary: t.summary_text, actions: t.actions_text, excerpts: joinContext(pieces), question: asked.question }));
+  const result = await answerQuestion(env, buildMessages({ summary: t.summary_text, actions: t.actions_text, excerpts: joinContext(pieces), question: asked.question }), nowSec);
   if (!result.ok) {
     const busy = result.reason === 'busy';
     return page(view({ question: asked.question, error: busy ? MESSAGES.modelBusy : MESSAGES.modelDown }), busy ? 429 : 503, busy ? { 'Retry-After': '60' } : {});

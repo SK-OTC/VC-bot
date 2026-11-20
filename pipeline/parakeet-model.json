@@ -1,0 +1,9 @@
+{
+  "model": "nvidia/parakeet-tdt-0.6b-v2",
+  "onnx_asr_name": "nemo-parakeet-tdt-0.6b-v2",
+  "export_repo": "istupakov/parakeet-tdt-0.6b-v2-onnx",
+  "export_revision": "0bbb45a3365852604aef28b538a8f066f4ccaa85",
+  "files": ["*.int8.onnx", "nemo128.onnx", "vocab.txt", "config.json"],
+  "licence": "CC-BY-4.0",
+  "note": "The weights are NVIDIA's, converted to ONNX and int8-quantised by the export repository above (used through the onnx-asr package). Changing the revision changes the workflow's model cache key automatically (it hashes this file)."
+}

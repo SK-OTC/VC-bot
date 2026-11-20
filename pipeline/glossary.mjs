@@ -4,7 +4,7 @@
 export function buildPrompt(glossary, { maxWords = 100, maxChars = 600 } = {}) {
   const terms = String(glossary ?? '')
     .split(/[,\n;]/)
-    .map((t) => t.trim())
+    .map((t) => t.split('=')[0].trim()) // "Correct=Mishearing": only the correct spelling goes to the speech model
     .filter(Boolean);
   if (terms.length === 0) return '';
   const out = [];

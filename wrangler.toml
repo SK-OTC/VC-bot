@@ -33,12 +33,17 @@ GITHUB_REF = "main"
 # Every saved transcript gets a private web link (https://<this worker>/t/<token>) that works for this many days.
 # 0 turns the automatic links off. /share-transcript can still make one by hand.
 SHARE_LINK_DAYS = "30"
-# "Ask about this meeting" on the page uses Groq. The key is a secret:  npx wrangler secret put GROQ_API_KEY
-# Without it the page shows only the summary. Limits protect your Groq quota (a failed attempt still counts):
-QA_HOURLY_PER_LINK = "15"
-QA_DAILY_PER_LINK = "60"
-QA_DAILY_TOTAL = "300"   # across all links; 0 turns questions off
-# LLM_MODEL = "openai/gpt-oss-120b"
+# "Ask about this meeting" on the page is answered by Llama 3.3 70B on Workers AI (the [ai] binding above, no key needed),
+# with Groq gpt-oss-120b as the fallback when Cloudflare errors (that needs the secret: npx wrangler secret put GROQ_API_KEY).
+# Cloudflare's free allowance is 10,000 Neurons a day for the WHOLE account (summaries, answers and embeddings share it),
+# reset at 00:00 UTC. The Worker keeps a daily meter and applies these soft caps:
+QA_SOFT_CAP = "7000"        # at or over this many Neurons today, Q&A is paused until midnight UTC. 0 = skip Cloudflare, Groq only
+SUMMARY_SOFT_CAP = "9500"   # the recorder uses Cloudflare for a summary only while today's total is under this
+# Per-link limits (a failed attempt still counts):
+QA_HOURLY_PER_LINK = "20"
+QA_DAILY_PER_LINK = "100"
+# QA_MODEL_ORDER = "cloudflare-llama,groq-gpt-oss"   # swap or drop a model
+# LLM_MODEL = "openai/gpt-oss-120b"                  # the Groq model
 # Optional: the address to put in links if it differs from the one the recorder calls, e.g. your own domain.
 # PUBLIC_URL = "https://meetings.example.com"
 # DISCORD_PUBLIC_KEY is not secret, but keeping it in a secret avoids committing it:

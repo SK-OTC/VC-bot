@@ -30,7 +30,7 @@ export async function readStopFlag(db, id, nowSec) {
 
 const LIVE = "('starting', 'running')";
 export const STALE_STARTING_SEC = 20 * 60; // the job never reported in (queue + start-up is normally under a minute or two)
-export const STALE_RUNNING_SEC = 6 * 3600; // longer than the workflow's own 5 hour limit, so the job is certainly gone
+export const STALE_RUNNING_SEC = 6 * 3600; // longer than the workflow's 345 minute limit, so the job is certainly gone
 
 /**
  * A crashed or cancelled job would otherwise keep its channel "being recorded" for ever, because the database allows
@@ -144,8 +144,8 @@ export async function saveTranscript(db, t, nowSec) {
       .prepare(
         `INSERT INTO transcripts
            (id, session_id, guild_id, voice_channel_id, post_channel_id, transcript_message_id, summary_message_id,
-            started_at, duration_sec, speakers, engine, language, summary_text, actions_text, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            started_at, duration_sec, speakers, engine, language, summary_text, actions_text, created_at, glossary_fixes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         t.id,
@@ -163,6 +163,7 @@ export async function saveTranscript(db, t, nowSec) {
         t.summary_text,
         t.actions_text,
         nowSec,
+        t.glossary_fixes?.length ? JSON.stringify(t.glossary_fixes) : null,
       ),
   ];
   for (let i = 0; i < chunks.length; i += ROWS_PER_INSERT) {

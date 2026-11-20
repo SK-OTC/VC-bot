@@ -97,7 +97,7 @@ function setup({ bindings = true, envExtra = {} } = {}) {
   const db = createTestDb();
   const ai = fakeAi();
   const vec = fakeVectorize();
-  const env = { DB: db, WORKER_SHARED_SECRET: SECRET, GROQ_API_KEY: GROQ_KEY, ...(bindings ? { AI: ai, VECTORIZE: vec } : {}), ...envExtra };
+  const env = { DB: db, WORKER_SHARED_SECRET: SECRET, GROQ_API_KEY: GROQ_KEY, QA_MODEL_ORDER: 'groq-gpt-oss', ...(bindings ? { AI: ai, VECTORIZE: vec } : {}), ...envExtra };
   const waits = [];
   const ctx = { waitUntil: (p) => waits.push(p) };
   const atTime = async (now, fn) => {

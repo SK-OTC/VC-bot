@@ -72,6 +72,7 @@ export class GroqEngine {
     if (!apiKey) throw new EngineError('auth', 'GROQ_API_KEY is missing');
     Object.assign(this, { apiKey, model, language, limiter, rest });
     this.name = `groq ${model}`;
+    this.label = 'Groq Whisper'; // how the transcript header names it
   }
 
   /** Returns [{ start, end, text, avg_logprob, no_speech_prob, compression_ratio }] in the batch's own time. */

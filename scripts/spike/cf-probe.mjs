@@ -1,16 +1,16 @@
 // Step 6 probe: does the Cloudflare REST API answer a tiny chat request on Llama 3.3 70B, on which path, and does it
 // report token usage? Makes TWO calls of about 20 tokens each (a few dozen Neurons out of the 10,000 daily allowance).
 //
-//   $env:CF_ACCOUNT_ID = "..."      # PowerShell; use  export CF_ACCOUNT_ID=...  in bash
-//   $env:CF_API_TOKEN  = "..."      # a token limited to "Workers AI" (Read/Edit), nothing else
+//   $env:CLOUDFLARE_ACCOUNT_ID = "..."      # PowerShell; use  export CLOUDFLARE_ACCOUNT_ID=...  in bash
+//   $env:CLOUDFLARE_API_TOKEN  = "..."      # a token limited to "Workers AI" (Read/Edit), nothing else
 //   node scripts/spike/cf-probe.mjs
 //
 // Prints status codes, field NAMES, token counts and timings only. It never prints the token, the account id or any
 // text the model wrote, so the output is safe to paste into a chat.
-const account = process.env.CF_ACCOUNT_ID;
-const token = process.env.CF_API_TOKEN;
+const account = process.env.CLOUDFLARE_ACCOUNT_ID;
+const token = process.env.CLOUDFLARE_API_TOKEN;
 if (!account || !token) {
-  console.error('Set CF_ACCOUNT_ID and CF_API_TOKEN in your environment first (never paste them into chat).');
+  console.error('Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in your environment first (never paste them into chat).');
   process.exit(1);
 }
 const MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
