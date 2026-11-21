@@ -113,7 +113,8 @@ const CSS = `
 html,body{margin:0}
 body{background:var(--bg);color:var(--text);font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
 .top{position:sticky;top:0;z-index:20;height:50px;display:flex;align-items:center;padding:0 16px;background:var(--bg);border-bottom:1px solid var(--line)}
-.brand{font-size:1.15rem;font-weight:650;letter-spacing:-.01em;color:var(--title)}
+.brand{font-size:1.15rem;font-weight:650;letter-spacing:-.01em;color:var(--title);text-decoration:none}
+.brand:hover,.brand:focus-visible{text-decoration:underline}
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 383px;min-height:calc(100vh - 50px)}
 .layout.solo{grid-template-columns:minmax(0,1fr)}
 .note{padding:4.2rem 24px 5rem}
@@ -206,7 +207,7 @@ export function shell(title, bodyHtml, { indexable = false } = {}) {
     (indexable ? '' : '<meta name="robots" content="noindex,nofollow,noarchive">') + '<meta name="referrer" content="no-referrer">' +
     '<meta name="color-scheme" content="dark">' +
     `<title>${esc(title)}</title><style>${CSS}</style></head><body>` +
-    `<header class="top"><span class="brand">VC Bot</span></header>${bodyHtml}</body></html>`
+    `<header class="top"><a class="brand" href="/">VC Bot</a></header>${bodyHtml}</body></html>`
   );
 }
 

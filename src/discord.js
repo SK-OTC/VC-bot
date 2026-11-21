@@ -150,5 +150,28 @@ export function createDiscordClient({ token, apiBase = 'https://discord.com/api/
     }
   }
 
-  return { postMessage, sendFollowup, editOriginal, getVoiceChannelOf, getChannel };
+  /** A private message from the bot to one person (opens the DM channel first). Fails if they have DMs from this server closed. */
+  async function sendDirectMessage(userId, { content }) {
+    let res;
+    try {
+      res = await doFetch(`${apiBase}/users/@me/channels`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'DiscordBot (meeting-time-bot, 1.0.0)', Authorization: `Bot ${token}` },
+        body: JSON.stringify({ recipient_id: userId }),
+      });
+    } catch (e) {
+      return { ok: false, retryable: true, error: `network error: ${e?.message ?? e}` };
+    }
+    if (!res.ok) return { ok: false, retryable: res.status === 429 || res.status >= 500, status: res.status, error: `HTTP ${res.status}` };
+    let channelId;
+    try {
+      channelId = String((await res.json())?.id ?? '');
+    } catch {
+      channelId = '';
+    }
+    if (!/^\d+$/.test(channelId)) return { ok: false, retryable: false, error: 'unreadable answer' };
+    return postMessage(channelId, { content });
+  }
+
+  return { postMessage, sendFollowup, editOriginal, sendDirectMessage, getVoiceChannelOf, getChannel };
 }

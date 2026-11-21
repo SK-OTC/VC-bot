@@ -14,7 +14,7 @@ test('GET / is the home page: 200, HTML, same shell as the transcript page, no s
   assert.match(res.headers.get('Cache-Control'), /no-store/, 'a status page must be fresh');
   assert.match(res.headers.get('Content-Security-Policy'), /default-src 'none'/);
   const html = await res.text();
-  assert.match(html, /<header class="top"><span class="brand">VC Bot<\/span><\/header>/);
+  assert.match(html, /<header class="top"><a class="brand" href="\/">VC Bot<\/a><\/header>/);
   assert.match(html, /<div class="layout solo"><main class="note"><div class="article"><h1>VC Bot<\/h1>/);
   assert.match(html, /<h2><span class="hash" aria-hidden="true">#<\/span>Status<\/h2>/);
   assert.ok(!/<script|<img|<iframe/i.test(html));

@@ -6,6 +6,10 @@
 //  - Every failure says what went wrong and why.
 import { ResponseType, MessageFlags } from './discord.js';
 import { validateScriptUrl } from './bridge.js';
+import { createConnectCode, getConnection } from './calendar-connections.js';
+import { disconnectGoogle } from './calendar-disconnect.js';
+import { hyperlink } from './discord-links.js';
+import { buildAuthUrl } from './google-oauth.js';
 import {
   addGuests,
   countSyncedMeetings,
@@ -31,6 +35,30 @@ export const MAX_GUESTS_PER_TEAM = 100;
 const EMAIL_RE = /^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/; // the same rule Code.gs applies
 const NO_GUESTS = new Set(['none', '(no guests)', 'no guests']);
 const private_ = (text) => reply(text, { ephemeral: true, allowedMentions: { parse: [] } });
+
+/**
+ * Which Google connection a meeting made by this person, in this server, goes through.
+ *  { provider: 'oauth', email }  their own Google sign-in, connected in THIS server (preferred when both exist)
+ *  { provider: 'bridge', email } their Apps Script bridge
+ *  { provider: null, reason }    neither; reason is 'other_team' when the sign-in exists but was made in another server
+ * A sign-in is only ever used for the server it was made in, so one team's meetings never land on a calendar connected for another.
+ */
+export async function resolveCalendarAccount(ctx, userId, guildId) {
+  const { db, google, bridge } = ctx;
+  let reason = null;
+  if (google) {
+    const conn = await getConnection(db, userId);
+    if (conn?.status === 'connected') {
+      if (conn.team_id === guildId) return { provider: 'oauth', email: conn.google_email };
+      reason = 'other_team';
+    }
+  }
+  if (bridge) {
+    const account = await getCalendarAccount(db, userId);
+    if (account) return { provider: 'bridge', email: account.account_email ?? null };
+  }
+  return { provider: null, reason };
+}
 
 /** Random Google event id: 'v' + 24 characters from 0-9a-v (the only characters Google accepts). */
 export function newEventId() {
@@ -100,16 +128,126 @@ export async function suggestTeams(ctx, query, { includeNone }) {
 // ---------- /calendar ----------
 
 export const NOT_ENABLED =
-  'Google Calendar sync is not enabled on this bot yet: the admin has not set the BRIDGE_SECRET secret. Ask your server admin.';
+  'Google Calendar sync is not enabled on this bot yet: the admin has not set the BRIDGE_SECRET secret (or the Google sign-in settings). Ask your server admin.';
 
 const CONNECT_HELP =
   'See the setup steps in GOOGLE_CALENDAR.md (Part A): the deployment must be "Execute as: Me" with "Who has access: Anyone", and BOT_SECRET in your script properties must match the bot\'s BRIDGE_SECRET.';
 
+/** /calendar connect with no url: a private, one-time Google sign-in link for this person and this server. */
+async function connectWithGoogle(ctx) {
+  const { db, google, userId, guildId, nowSec } = ctx;
+  if (!google) {
+    return fail(
+      'Google sign-in is not set up on this bot yet (the admin has not set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and TOKEN_ENC_KEY). ' +
+        'Ask your server admin. If you use the Apps Script bridge instead, add its address: `/calendar connect url:<your script URL>`.',
+    );
+  }
+  if (!guildId) return fail('Run `/calendar connect` inside your server, not in a direct message.');
+
+  const existing = await getConnection(db, userId);
+  if (existing?.status === 'connected') {
+    return fail(
+      `Your Google account (${existing.google_email}) is already connected. ` +
+        'To connect a different one, run `/calendar disconnect` first, then `/calendar connect` again.',
+    );
+  }
+
+  const state = await createConnectCode(db, { discordUserId: userId, teamId: guildId, nowSec });
+  const link = buildAuthUrl({ clientId: google.clientId, redirectUri: google.redirectUri, state });
+  return private_(
+    `**Connect your Google Calendar**\n${hyperlink('Sign in with Google', link)}\n\n` +
+      'This link is for you only and works once, for 10 minutes. Google will show an **"unverified app"** warning: that is expected. ' +
+      'Click **Advanced**, then **Go to … (unsafe)**, and leave every permission box ticked. Meetings you schedule in this server will use the account you pick.',
+  );
+}
+
+/**
+ * Answers privately, after Discord has been told "working on it": for work that can take longer than Discord's 3 seconds (a call to
+ * Google). Falls back to answering directly when the interaction cannot be edited later. `run` returns the text to show.
+ */
+async function answerPrivately(ctx, label, run, unexpected) {
+  const { discord, defer, interaction } = ctx;
+  const { application_id: appId, token } = interaction;
+  if (!defer || !appId || !token) return private_(await run().catch((e) => unexpected(e)));
+  defer(
+    (async () => {
+      let content;
+      try {
+        content = await run();
+      } catch (e) {
+        console.error(`${label} failed: ${String(e?.name ?? 'Error').slice(0, 40)}`);
+        content = unexpected(e);
+      }
+      const res = await discord.editOriginal(appId, token, { content });
+      if (!res.ok) console.error(`${label}: could not edit the reply: ${res.error}`);
+    })(),
+  );
+  return { type: ResponseType.DEFERRED, data: { flags: MessageFlags.EPHEMERAL } };
+}
+
+const unexpectedDisconnect = () => 'Something went wrong on my side and I could not finish disconnecting. Please try again.';
+
+/** The reply after a Google sign-in was disconnected. */
+function disconnectedText(out) {
+  const who = out.email ? ` **${out.email}**` : '';
+  const revoke = {
+    revoked: 'I revoked the bot\'s access at Google, so it should disappear from https://myaccount.google.com/permissions (it can take a moment).',
+    already_invalid: 'Google had already ended this sign-in, so there was nothing left to revoke.',
+    not_needed: 'Google had already stopped accepting this sign-in, so there was nothing left to revoke.',
+    manual: 'I could not revoke the access at Google for you. To be sure it is gone, remove the bot at https://myaccount.google.com/permissions.',
+  }[out.revoked];
+  const meetings = out.affected
+    ? `${out.affected === 1 ? '1 upcoming meeting keeps its Google event' : `${out.affected} upcoming meetings keep their Google events`} but will no longer sync; ` +
+      '`/upcoming-meetings` marks them. Events already in your calendar are not deleted.'
+    : 'None of your upcoming meetings were synced, so nothing else changed.';
+  return `Disconnected your Google account${who}. ${revoke}\n${meetings}\nReconnect any time with \`/calendar connect\`.`;
+}
+
+/** /calendar disconnect for a Google sign-in. Returns the text to show, or null when the person has none (so the Apps Script path runs). */
+async function disconnectGoogleAccount(ctx) {
+  const { db, google, userId, nowSec } = ctx;
+  const out = google?.disconnect
+    ? await google.disconnect(userId, nowSec)
+    : await disconnectGoogle({ db, config: null, discordUserId: userId, nowSec });
+  if (!out.ok) return out.error;
+  if (out.outcome === 'none') return null;
+  const bridgeLeft = ctx.bridge ? await getCalendarAccount(db, userId) : null;
+  return (
+    disconnectedText(out) +
+    (bridgeLeft ? '\nYou also have an Apps Script calendar connected. Run `/calendar disconnect` again to remove that one too.' : '')
+  );
+}
+
+function googleStatusText(conn, { synced, failed }, guildId) {
+  if (conn.status !== 'connected') {
+    return (
+      `**Google sign-in: disconnected.** It was **${conn.google_email}**, and Google stopped accepting it` +
+      `${conn.last_refresh_at ? ` <t:${conn.last_refresh_at}:R>` : ''}. Run \`/calendar connect\` to sign in again.`
+    );
+  }
+  const check = !conn.last_refresh_at
+    ? 'not checked yet'
+    : conn.last_refresh_result === 'ok'
+      ? `working (checked <t:${conn.last_refresh_at}:R>)`
+      : `had a temporary problem <t:${conn.last_refresh_at}:R>`;
+  return (
+    `**Google sign-in: connected** as **${conn.google_email}** (since <t:${conn.token_issued_at}:D>), ${check}.\n` +
+    (conn.team_id === guildId ? 'It is used for meetings in this server.' : 'It was connected in a different server, so it is not used for meetings in this one.') +
+    `\nUpcoming synced meetings: ${synced}${failed ? `, ${failed} with a sync problem (see \`/upcoming-meetings\`)` : ''}.`
+  );
+}
+
 export async function cmdCalendar(ctx, sub, o) {
-  const { db, discord, bridge, userId, nowSec, interaction } = ctx;
-  if (!bridge) return fail(NOT_ENABLED);
+  const { db, discord, bridge, google, userId, guildId, nowSec, interaction } = ctx;
+  if (sub === 'connect' && o.url === undefined) return connectWithGoogle(ctx);
+  // With neither feature set up there is nothing to connect, but anyone who still has a stored sign-in must be able to see it and
+  // remove it (an admin may have removed the Google settings after they connected).
+  if (!bridge && !google && !(sub !== 'connect' && (await getConnection(db, userId)))) return fail(NOT_ENABLED);
 
   if (sub === 'connect') {
+    if (!bridge) {
+      return fail('The Apps Script bridge is not enabled on this bot (BRIDGE_SECRET is not set). Run `/calendar connect` without a url to sign in with Google instead.');
+    }
     const check = validateScriptUrl(o.url ?? '', { extraHosts: ctx.extraHosts ?? [] });
     if (!check.ok) return fail(`Could not connect: ${check.error}`);
 
@@ -144,10 +282,15 @@ export async function cmdCalendar(ctx, sub, o) {
   }
 
   if (sub === 'disconnect') {
+    // A Google sign-in is handled first (revoked at Google, then deleted). If the person also has an Apps Script calendar, a
+    // second /calendar disconnect removes that, so nothing is removed that they did not ask about.
+    if (await getConnection(db, userId)) {
+      return answerPrivately(ctx, 'calendar disconnect', async () => (await disconnectGoogleAccount(ctx)) ?? unexpectedDisconnect(), unexpectedDisconnect);
+    }
     const account = await getCalendarAccount(db, userId);
     if (!account) return private_('Your Google Calendar is not connected, so there is nothing to disconnect.');
     await deleteCalendarAccount(db, userId);
-    const affected = await flagMeetingsOwnerDisconnected(db, userId);
+    const affected = await flagMeetingsOwnerDisconnected(db, userId, 'bridge');
     return private_(
       `Disconnected${account.account_email ? ` ${account.account_email}` : ''}. ` +
         (affected
@@ -158,13 +301,20 @@ export async function cmdCalendar(ctx, sub, o) {
   }
 
   if (sub === 'status') {
+    const conn = await getConnection(db, userId);
     const account = await getCalendarAccount(db, userId);
-    if (!account) return private_('Your Google Calendar is not connected. Run `/calendar connect url:<your Apps Script URL>`.');
-    const { synced, failed } = await countSyncedMeetings(db, userId);
-    return private_(
-      `Connected as ${account.account_email ?? 'an unknown account'} (since <t:${account.connected_at}:D>).\n` +
-        `Upcoming synced meetings: ${synced}${failed ? `, ${failed} with a sync problem (see \`/upcoming-meetings\`)` : ''}.`,
-    );
+    if (!conn && !account) return private_('Your Google Calendar is not connected. Run `/calendar connect` to sign in with Google.');
+
+    const parts = [];
+    if (conn) parts.push(googleStatusText(conn, await countSyncedMeetings(db, userId, 'oauth'), guildId));
+    if (account) {
+      const { synced, failed } = await countSyncedMeetings(db, userId, 'bridge');
+      parts.push(
+        `${conn ? '**Apps Script calendar: connected** as ' : 'Connected as '}${account.account_email ?? 'an unknown account'} (since <t:${account.connected_at}:D>).\n` +
+          `Upcoming synced meetings: ${synced}${failed ? `, ${failed} with a sync problem (see \`/upcoming-meetings\`)` : ''}.`,
+      );
+    }
+    return private_(parts.join('\n\n'));
   }
 
   return fail("I don't know that /calendar command.");
@@ -196,8 +346,16 @@ function checkTeamName(raw) {
   return { ok: true, name };
 }
 
-const updatedNote = (n) =>
-  n ? `\n${n} upcoming meeting${n === 1 ? '' : 's'} will be updated on Google Calendar shortly.` : '';
+const meetingsText = (n) => `${n} upcoming meeting${n === 1 ? '' : 's'}`;
+// Only meetings on the changer's own Google Calendar are updated there (see markTeamMeetingsDirty); say what happened to the rest.
+const updatedNote = ({ updated, notUpdated }) =>
+  (updated ? `\n${meetingsText(updated)} will be updated on Google Calendar shortly.` : '') +
+  (notUpdated
+    ? `\n${meetingsText(notUpdated)} on other people's Google Calendars ${notUpdated === 1 ? 'was' : 'were'} not changed there: ` +
+      `a change is sent to Google only by the calendar's owner, so ${notUpdated === 1 ? 'it gets' : 'they get'} the new guest list ` +
+      `the next time the owner changes ${notUpdated === 1 ? 'it' : 'them'}.`
+    : '');
+const NO_MEETINGS = { updated: 0, notUpdated: 0 };
 
 export async function cmdGuests(ctx, sub, o) {
   const { db, guildId, userId, nowSec, interaction } = ctx;
@@ -243,7 +401,7 @@ export async function cmdGuests(ctx, sub, o) {
     }
     await addGuests(db, guildId, team.team_key, fresh);
     // One update for the team's upcoming meetings, however many people were added.
-    const affected = fresh.length && !created ? await markTeamMeetingsDirty(db, guildId, team.team_key, nowSec) : 0;
+    const affected = fresh.length && !created ? await markTeamMeetingsDirty(db, guildId, team.team_key, nowSec, { actorId: userId }) : NO_MEETINGS;
     const total = have.size + fresh.length;
     const lines = [`${created ? 'Created the team' : 'Updated the team'} **${team.name}**: added ${fresh.length}, ${total} in total.`];
     if (already.length) lines.push(`Already on the team: ${already.join(', ')}`);
@@ -262,7 +420,7 @@ export async function cmdGuests(ctx, sub, o) {
     const removed = valid.filter((e) => have.has(e));
     const missing = valid.filter((e) => !have.has(e));
     await removeGuests(db, guildId, team.team_key, removed);
-    const affected = removed.length ? await markTeamMeetingsDirty(db, guildId, team.team_key, nowSec) : 0;
+    const affected = removed.length ? await markTeamMeetingsDirty(db, guildId, team.team_key, nowSec, { actorId: userId }) : NO_MEETINGS;
     const lines = [`Removed ${removed.length} from **${team.name}**, ${have.size - removed.length} left.`];
     if (missing.length) lines.push(`Not on the team, nothing to remove: ${missing.join(', ')}`);
     return private_(lines.join('\n') + invalidNote(invalid) + updatedNote(affected));
@@ -274,11 +432,15 @@ export async function cmdGuests(ctx, sub, o) {
   }
 
   if (sub === 'delete-team') {
-    const affected = await markTeamMeetingsDirty(db, guildId, team.team_key, nowSec, { clearTeam: true });
+    const { updated, notUpdated } = await markTeamMeetingsDirty(db, guildId, team.team_key, nowSec, { clearTeam: true, actorId: userId });
     await deleteTeam(db, guildId, team.team_key);
     return private_(
       `Deleted the team **${team.name}** and its addresses.` +
-        (affected ? `\n${affected} upcoming meeting${affected === 1 ? '' : 's'} will be updated on Google Calendar shortly, without guests.` : '') +
+        (updated ? `\n${meetingsText(updated)} will be updated on Google Calendar shortly, without guests.` : '') +
+        (notUpdated
+          ? `\n${meetingsText(notUpdated)} on other people's Google Calendars keep${notUpdated === 1 ? 's' : ''} these guests there until ` +
+            `the owner next changes ${notUpdated === 1 ? 'it' : 'them'} (a change is sent to Google only by the calendar's owner).`
+          : '') +
         ' Presets that used this team will schedule without guests.',
     );
   }

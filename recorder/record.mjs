@@ -1,7 +1,7 @@
 // Production recorder: joins a team's voice channel, records every speaker, and when the meeting ends
 // transcribes it, posts transcript + summary to that team's private channel, and stores it for /transcript.
 // Runs inside a GitHub Actions job started by the Cloudflare Worker (or by hand). Logs show counts only.
-import { Client, GatewayIntentBits, Events, ChannelType } from 'discord.js';
+import { Client, GatewayIntentBits, Events, ChannelType, PermissionFlagsBits } from 'discord.js';
 import { joinVoiceChannel, entersState, VoiceConnectionStatus, EndBehaviorType } from '@discordjs/voice';
 import { mkdirSync, rmSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -76,6 +76,14 @@ async function main() {
   if (cfg.team.post && (!target?.isTextBased() || target.guildId !== guild.id)) throw new Error('the transcript channel must be a text channel in the same server as the voice channel');
   const backup = cfg.team.backupChannelId ? await client.channels.fetch(cfg.team.backupChannelId) : null;
   if (backup && (!backup.isTextBased() || backup.guildId !== guild.id)) throw new Error('backupChannelId must be a text channel in the same server');
+  // /setup-recording only proves the bot can SEND in the transcript channel. Without Attach Files the transcript file cannot be
+  // posted there; finishSession then saves it and sends it another way, but warn now so the log shows why. Never blocks recording.
+  try {
+    const perms = target?.permissionsFor?.(me);
+    if (perms && !perms.has(PermissionFlagsBits.AttachFiles)) log('warning: the bot may not Attach Files in the transcript channel; the transcript file will be sent another way');
+  } catch {
+    // a permission lookup problem must never stop a recording
+  }
 
   // A private message to whoever started the recording (used when posting is off). Needs the discord.js client; fails quietly
   // if they do not accept messages from this bot (Discord error 50007).
@@ -260,7 +268,8 @@ async function main() {
       return { messageId: msg.id };
     },
     postBackup: async (content, files) => {
-      await retry(() => backup.send({ content, files: files.map((f) => ({ attachment: f.path, name: f.name })), allowedMentions: NOMENTIONS }));
+      // Audio files come from disk ({ path }); a rescued transcript file comes from memory ({ data }).
+      await retry(() => backup.send({ content, files: files.map((f) => ({ attachment: f.data ?? f.path, name: f.name })), allowedMentions: NOMENTIONS }));
     },
   };
 
@@ -306,11 +315,16 @@ async function main() {
   log(`done: ${JSON.stringify({ id: result.id, speakers: result.stats.speakers, batches: result.stats.batches, failed: result.stats.failed, fallback: result.stats.fallback, summarised: result.summarised, stored: result.stored })}`);
   for (const n of result.notes) log(`note: ${n}`);
 
+  if (result.lost) {
+    // Not posted, not saved, not sent anywhere: say so where possible and mark the run failed, so it does not look fine.
+    await notify(`The ${cfg.team.name} transcript could not be posted, saved or sent anywhere, so it is gone. Check that I may Attach Files in the transcript channel.`);
+  }
   rmSync(OUT_DIR, { recursive: true, force: true });
   await client.destroy();
   await enginePlan.close();
-  await reportFinish(process.env, 'done'); // already 'done' if the transcript was stored; this covers "storage not configured"
-  process.exit(0);
+  // 'done' is usually already reported when the transcript was stored; this also covers "storage not configured".
+  await reportFinish(process.env, result.lost ? 'failed' : 'done', result.lost ? 'the transcript could not be posted, saved or sent' : '');
+  process.exit(result.lost ? 3 : 0);
 }
 
 main().catch(async (e) => {

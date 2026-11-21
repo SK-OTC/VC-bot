@@ -12,6 +12,8 @@
 //    to the organizer when a private follow-up is still possible.
 import { withCheckedMeetLink } from './bridge.js';
 import { bridgeTimeZone } from './time.js';
+import { getConnection } from './calendar-connections.js';
+import { addToCalendarLink, channelNotice, disconnectAndNotify, guestLinkMessage, staleEventMessage } from './calendar-failure.js';
 import {
   claimDirtyMeetings,
   clearFollowup,
@@ -90,6 +92,50 @@ async function giveUp(ctx, m, action, error, version, summary) {
   if (!pub.ok) console.warn(`calendar sync: could not post the failure notice for meeting ${m.id}: ${pub.error}`);
 }
 
+/**
+ * The PM's Google sign-in no longer works (res.code is 'invalid_grant', or 'not_connected' because an earlier failure already
+ * disconnected them). The first time, they are disconnected and DMed a reconnect link; the meeting's channel gets an
+ * "Add to Google Calendar" link so the meeting still reaches calendars. The Discord meeting and its reminders are not affected.
+ */
+async function signInLost(ctx, m, action, res, guests, version, summary) {
+  const { db, discord, google, nowSec } = ctx;
+  // The channel's link never carries guest emails (see calendar-failure.js); only the private message to the PM does.
+  const link = action === 'cancel' ? null : addToCalendarLink(m, []);
+  const privateNote = action === 'create' ? guestLinkMessage(m, addToCalendarLink(m, guests)) : action === 'update' ? staleEventMessage(m) : null;
+
+  let told = false;
+  let reconnectText = null;
+  if (res.code === 'invalid_grant') {
+    const out = await disconnectAndNotify({
+      db,
+      discord,
+      signIn: google?.signIn,
+      userId: m.gcal_owner_id,
+      teamId: m.guild_id,
+      nowSec,
+      extraMessages: privateNote ? [privateNote] : [],
+    });
+    told = out.dmSent;
+    reconnectText = out.reconnectText;
+  }
+  bump(summary, 'signInLost');
+
+  // A cancellation has nothing to add to a calendar: it gets the usual failure notes (the event may still exist).
+  if (action === 'cancel') return giveUp(ctx, m, action, res.error, version, summary);
+
+  await finishSync(db, m.id, version, { error: res.error });
+  bump(summary, 'failed');
+  if (!told) {
+    // The DM did not go through, or the PM was already disconnected: use the private reply to their command if it is still valid.
+    const text = reconnectText ?? `${res.error}
+
+${privateNote}`;
+    told = (await tellOrganizer(ctx, m, text)).sent;
+  }
+  const post = await discord.postMessage(m.channel_id, { content: channelNotice(m, action, link, { organizerTold: told }), allowedMentions: { parse: [] } });
+  if (!post.ok) console.warn(`calendar sync: could not post the calendar link for meeting ${m.id}: ${post.error}`);
+}
+
 async function afterCreate(ctx, m, res) {
   const { db, discord } = ctx;
   const link = m.gcal_meet !== 0 ? res.meetLink || '' : '';
@@ -103,9 +149,8 @@ async function afterCreate(ctx, m, res) {
   }
   const team = m.guest_team_key ? await getTeam(db, m.guild_id, m.guest_team_key) : null;
   const guestCount = team ? (await listGuests(db, m.guild_id, team.team_key)).length : 0;
-  const account = await getCalendarAccount(db, m.gcal_owner_id);
   await tellOrganizer(ctx, m, calendarCreatedNote(m, {
-    account: account?.account_email,
+    account: await accountEmail(db, m),
     teamName: team?.name ?? null,
     guestCount,
     meetRequested: m.gcal_meet !== 0,
@@ -116,8 +161,17 @@ async function afterCreate(ctx, m, res) {
   }));
 }
 
+/** Which Google connection a meeting goes through, fixed when it was first put on a calendar. NULL (every older meeting) = the Apps Script bridge. */
+export const providerOf = (m) => (m.gcal_provider === 'oauth' ? 'oauth' : 'bridge');
+
+/** The Google account address the meeting's calendar belongs to, for the organiser's note. */
+async function accountEmail(db, m) {
+  if (providerOf(m) === 'oauth') return (await getConnection(db, m.gcal_owner_id))?.google_email;
+  return (await getCalendarAccount(db, m.gcal_owner_id))?.account_email;
+}
+
 async function processMeeting(ctx, m, summary) {
-  const { db, bridge } = ctx;
+  const { db, bridge, google } = ctx;
   const version = m.gcal_version;
   const action = chooseAction(m);
   if (!action) {
@@ -129,22 +183,34 @@ async function processMeeting(ctx, m, summary) {
     return bump(summary, 'cleared');
   }
 
-  const account = m.gcal_owner_id ? await getCalendarAccount(db, m.gcal_owner_id) : null;
-  if (!account) {
-    return giveUp(
-      ctx,
-      m,
-      action,
-      'the owner of this calendar event has disconnected their Google Calendar (or never connected it), so it can no longer be synced.',
-      version,
-      summary,
-    );
-  }
-
   const guests = action !== 'cancel' && m.guest_team_key ? await listGuests(db, m.guild_id, m.guest_team_key) : [];
-  // The script is the organiser's own, so its Meet link is checked again here, where it is about to be posted and stored (the real
-  // bridge client already does this; checking twice is harmless and covers any other client).
-  const raw = await bridge.call(account.script_url, buildPayload(m, action, guests));
+  let raw;
+  if (providerOf(m) === 'oauth') {
+    // The organiser's own Google sign-in, used only for the server the meeting is in (a connection from another server is refused).
+    if (!google || !m.gcal_owner_id) {
+      return giveUp(ctx, m, action, 'Google sign-in is not set up on this bot, so this meeting cannot be synced. Tell the server admin.', version, summary);
+    }
+    // meetingId goes into the event's private properties so the event can always be traced back to its meeting.
+    raw = await google.call({ ownerId: m.gcal_owner_id, teamId: m.guild_id, nowSec: ctx.nowSec }, { ...buildPayload(m, action, guests), meetingId: m.id });
+  } else {
+    if (!bridge) {
+      return giveUp(ctx, m, action, 'the Apps Script calendar bridge is not enabled on this bot (BRIDGE_SECRET is not set), so this meeting cannot be synced. Tell the server admin.', version, summary);
+    }
+    const account = m.gcal_owner_id ? await getCalendarAccount(db, m.gcal_owner_id) : null;
+    if (!account) {
+      return giveUp(
+        ctx,
+        m,
+        action,
+        'the owner of this calendar event has disconnected their Google Calendar (or never connected it), so it can no longer be synced.',
+        version,
+        summary,
+      );
+    }
+    raw = await bridge.call(account.script_url, buildPayload(m, action, guests));
+  }
+  // The Meet link is checked again here, where it is about to be posted and stored: the Apps Script is each organiser's own, and a
+  // link from either route must really be a meet.google.com address.
   const res = raw.ok ? withCheckedMeetLink(raw) : raw;
 
   if (res.ok) {
@@ -165,6 +231,10 @@ async function processMeeting(ctx, m, summary) {
     return;
   }
 
+  if (providerOf(m) === 'oauth' && (res.code === 'invalid_grant' || res.code === 'not_connected')) {
+    return signInLost(ctx, m, action, res, guests, version, summary);
+  }
+
   const attempts = m.gcal_attempts + 1;
   if (res.retryable && attempts < MAX_ATTEMPTS) {
     await retrySyncLater(db, m.id, ctx.nowSec + backoffSec(attempts), `${res.error} (attempt ${attempts} of ${MAX_ATTEMPTS}, will retry)`);
@@ -174,9 +244,9 @@ async function processMeeting(ctx, m, summary) {
 }
 
 /** Syncs up to SYNC_BATCH_SIZE dirty meetings. Never throws; returns a summary for logging. */
-export async function runCalendarSync({ db, discord, bridge, nowSec }) {
+export async function runCalendarSync({ db, discord, bridge = null, google = null, nowSec }) {
   const summary = { claimed: 0 };
-  const ctx = { db, discord, bridge, nowSec };
+  const ctx = { db, discord, bridge, google, nowSec };
   const meetings = await claimDirtyMeetings(db, nowSec, SYNC_BATCH_SIZE);
   summary.claimed = meetings.length;
   for (const m of meetings) {

@@ -34,14 +34,14 @@ const scheduleOptions = {
       { name: 'Weekly', value: 'weekly' },
     ],
   }),
-  ping: opt(T.ROLE, 'ping', 'Role to mention in the reminder and start messages'),
+  ping: opt(T.ROLE, 'ping', 'Role to mention when the meeting is scheduled, at the reminder and at the start'),
 };
 
 // Discord's role picker takes one role per option, so extra roles get their own options.
 // Passing any of these replaces the whole set of roles to ping.
 export const PING_OPTION_NAMES = ['ping', 'ping_2', 'ping_3', 'ping_4', 'ping_5'];
 const pingOptions = PING_OPTION_NAMES.map((name, i) =>
-  i === 0 ? scheduleOptions.ping : opt(T.ROLE, name, 'Another role to mention in the reminder and start messages'),
+  i === 0 ? scheduleOptions.ping : opt(T.ROLE, name, 'Another role to mention (same times as the first role)'),
 );
 
 // Every command is top-level, so each shows up on its own in Discord's slash menu.
@@ -169,8 +169,8 @@ export const COMMANDS = [
     description: 'Connect your Google Calendar so meetings you schedule are added to it',
     contexts: [0],
     options: [
-      opt(T.SUB_COMMAND, 'connect', 'Connect your Google Calendar bridge', {
-        options: [opt(T.STRING, 'url', 'Your Apps Script web app URL (ends in /exec)', { required: true, max_length: 300 })],
+      opt(T.SUB_COMMAND, 'connect', 'Connect your Google Calendar (sign in with Google)', {
+        options: [opt(T.STRING, 'url', 'Only if you use the older Apps Script bridge: your web app URL (ends in /exec)', { max_length: 300 })],
       }),
       opt(T.SUB_COMMAND, 'disconnect', 'Disconnect your Google Calendar'),
       opt(T.SUB_COMMAND, 'status', 'Show whether your Google Calendar is connected'),

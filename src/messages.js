@@ -1,5 +1,6 @@
 // Text for every message the bot posts. Times use Discord timestamps so each reader sees
 // them in their own timezone.
+import { hyperlink } from './discord-links.js';
 import { discordTimestamp as ts, formatLocal } from './time.js';
 
 // A meeting or preset can ping several roles; role_id holds their ids separated by commas.
@@ -40,9 +41,12 @@ export function confirmationText(m, { header = 'Meeting scheduled', extraLines =
   return lines.join('\n');
 }
 
-/** Public post for the meeting's channel: name, time, location, and any warning. */
-export function publicNoticeText(m, { header = 'New meeting', warning = null } = {}) {
-  let text = `**${header}: ${m.name}**\nWhen: ${ts(m.start_at, 'F')} (${ts(m.start_at, 'R')})` + whereLine(m);
+/**
+ * Public post for the meeting's channel: name, time, location, and any warning. With `ping`, the meeting's roles are mentioned first
+ * (the caller must also allow those mentions: allowedMentionsFor(m, { ping: true })).
+ */
+export function publicNoticeText(m, { header = 'New meeting', warning = null, ping = false } = {}) {
+  let text = `${ping ? roleMention(m) : ''}**${header}: ${m.name}**\nWhen: ${ts(m.start_at, 'F')} (${ts(m.start_at, 'R')})` + whereLine(m);
   if (warning) text += `\nHeads up: ${warning}`;
   return text;
 }
@@ -80,7 +84,7 @@ export function cancelText(m) {
 
 /** The only calendar text posted in a channel: no emails, no account names. */
 export function meetLinkText(m, link) {
-  return `Google Meet link for ${m.name}: ${link}`;
+  return `Google Meet link for ${m.name}: ${hyperlink('Join the call', link)}`;
 }
 
 /** Private note to the organizer after the event was created. */
@@ -94,7 +98,7 @@ export function calendarCreatedNote(m, { account, teamName, guestCount, meetRequ
   if (!meetRequested) {
     lines.push('No Google Meet link was created, as you asked.');
   } else if (meetLinkRejected) {
-    lines.push('Warning: your script returned a "Meet link" that is not a meet.google.com address, so it was not posted or saved. Check your Apps Script.');
+    lines.push('Warning: the "Meet link" Google returned is not a meet.google.com address, so it was not posted or saved. (If you use the Apps Script bridge, check your script.)');
   } else if (!meetLink) {
     lines.push('Warning: Google did not return a Meet link for this event.');
   } else if (linkPosted) {

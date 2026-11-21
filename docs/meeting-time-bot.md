@@ -22,7 +22,7 @@ Discord slash commands that post meeting times (as Discord timestamps, so everyo
 
 | Moment | Message |
 |---|---|
-| Command run | Announcement with the time in each reader's timezone, plus how it was interpreted (for example "Entered as Fri, Nov 20, 3:00 PM (America/Chicago)") |
+| Command run | Announcement with the time in each reader's timezone, plus how it was interpreted (for example "Entered as Fri, Nov 20, 3:00 PM (America/Chicago)"). A **new** meeting starts with a mention of its `ping` roles; an update does not mention anyone |
 | Before the start (default 15 min; `2h`, `1h30min`, `15min`; a plain number means hours; `0` = off) | "⏰ Team Sync starts in 15 minutes", pinging the optional role |
 | Start time | "🚀 Team Sync is starting now!" |
 

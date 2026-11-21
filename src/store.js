@@ -28,6 +28,7 @@ const MEETING_COLUMNS = new Set([
   'gcal_followup_token',
   'gcal_followup_expires',
   'gcal_meet',
+  'gcal_provider',
 ]);
 
 // ---------- users ----------
@@ -90,8 +91,8 @@ export async function insertMeeting(db, m, nowSec) {
          (guild_id, name, name_key, channel_id, location, timezone, start_at, reminder_minutes,
           repeat, role_id, created_by, status, created_at, updated_at,
           duration_min, guest_team_key, gcal_owner_id, gcal_event_id, gcal_dirty, gcal_version,
-          gcal_followup_app_id, gcal_followup_token, gcal_followup_expires, gcal_meet)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          gcal_followup_app_id, gcal_followup_token, gcal_followup_expires, gcal_meet, gcal_provider)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       m.guild_id,
@@ -117,6 +118,7 @@ export async function insertMeeting(db, m, nowSec) {
       m.gcal_followup_token ?? null,
       m.gcal_followup_expires ?? null,
       m.gcal_meet === 0 || m.gcal_meet === false ? 0 : 1,
+      m.gcal_provider ?? null,
     )
     .run();
   return res.meta.last_row_id;
@@ -364,22 +366,29 @@ export async function deleteCalendarAccount(db, userId) {
  * Disconnecting stops syncing: the owner's upcoming synced meetings keep their Google events but are
  * flagged so /upcoming-meetings shows why they no longer sync. Returns how many were affected.
  */
-export async function flagMeetingsOwnerDisconnected(db, userId) {
+export async function flagMeetingsOwnerDisconnected(db, userId, provider = null) {
   const res = await db
     .prepare(
       `UPDATE meetings SET gcal_dirty = 0, gcal_error = 'calendar disconnected by its owner'
-       WHERE gcal_owner_id = ? AND gcal_event_id IS NOT NULL AND status = 'active'`,
+       WHERE gcal_owner_id = ? AND gcal_event_id IS NOT NULL AND status = 'active'${providerClause(provider)}`,
     )
     .bind(userId)
     .run();
   return res.meta.changes ?? 0;
 }
 
-export async function countSyncedMeetings(db, userId) {
+/** Which Google connection a meeting uses: 'oauth' (the Google sign-in), 'bridge' (the older Apps Script, stored as NULL), or null = either. */
+function providerClause(provider) {
+  if (provider === 'oauth') return " AND gcal_provider = 'oauth'";
+  if (provider === 'bridge') return ' AND gcal_provider IS NULL';
+  return '';
+}
+
+export async function countSyncedMeetings(db, userId, provider = null) {
   const row = await db
     .prepare(
       `SELECT COUNT(*) AS synced, SUM(CASE WHEN gcal_error IS NOT NULL THEN 1 ELSE 0 END) AS failed
-       FROM meetings WHERE gcal_owner_id = ? AND gcal_event_id IS NOT NULL AND status = 'active'`,
+       FROM meetings WHERE gcal_owner_id = ? AND gcal_event_id IS NOT NULL AND status = 'active'${providerClause(provider)}`,
     )
     .bind(userId)
     .first();
@@ -472,21 +481,33 @@ export async function markMeetingDirty(db, id, followup = null) {
 }
 
 /**
- * Marks a team's upcoming active synced meetings dirty (team membership changed or the team was deleted).
- * With clearTeam the meetings also forget the team. Returns how many meetings were affected.
+ * A team's membership changed (or the team was deleted): queue a Google update for the team's upcoming synced meetings, but only
+ * those on the calendar of the person making the change (`actorId`). A meeting on someone else's Google Calendar is not synced,
+ * because the update would be sent to Google as that person (their account would email the new guests); it gets the new guest
+ * list the next time its owner changes it. With clearTeam every one of the meetings forgets the team in the database.
+ * Returns { updated, notUpdated }: the meetings queued for Google, and those left for their owner.
  */
-export async function markTeamMeetingsDirty(db, guildId, teamKey, nowSec, { clearTeam = false } = {}) {
+export async function markTeamMeetingsDirty(db, guildId, teamKey, nowSec, { clearTeam = false, actorId } = {}) {
+  if (!actorId) throw new Error('markTeamMeetingsDirty needs the id of the person making the change');
+  const match = `guild_id = ? AND guest_team_key = ? AND status = 'active' AND start_at > ?
+         AND gcal_event_id IS NOT NULL AND gcal_owner_id IS NOT NULL`;
+  const others = await db
+    .prepare(`SELECT COUNT(*) AS n FROM meetings WHERE ${match} AND gcal_owner_id <> ?`)
+    .bind(guildId, teamKey, nowSec, actorId)
+    .first();
   const res = await db
     .prepare(
       `UPDATE meetings SET gcal_dirty = 1, gcal_version = gcal_version + 1, gcal_attempts = 0,
          gcal_run_after = 0, gcal_error = NULL,
          guest_team_key = CASE WHEN ? = 1 THEN NULL ELSE guest_team_key END
-       WHERE guild_id = ? AND guest_team_key = ? AND status = 'active' AND start_at > ?
-         AND gcal_event_id IS NOT NULL AND gcal_owner_id IS NOT NULL`,
+       WHERE ${match} AND gcal_owner_id = ?`,
     )
-    .bind(clearTeam ? 1 : 0, guildId, teamKey, nowSec)
+    .bind(clearTeam ? 1 : 0, guildId, teamKey, nowSec, actorId)
     .run();
-  return res.meta.changes ?? 0;
+  if (clearTeam) {
+    await db.prepare(`UPDATE meetings SET guest_team_key = NULL WHERE ${match} AND gcal_owner_id <> ?`).bind(guildId, teamKey, nowSec, actorId).run();
+  }
+  return { updated: res.meta.changes ?? 0, notUpdated: others?.n ?? 0 };
 }
 
 /** Claims up to `limit` dirty meetings that are due, leasing them so overlapping cron runs skip them. */

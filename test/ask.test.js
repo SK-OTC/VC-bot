@@ -252,12 +252,12 @@ test('prompt injection: words spoken in the meeting stay data, the rules never c
     const { messages } = groq.calls[0].body;
     assert.ok(!messages[0].content.includes('IGNORE ALL PREVIOUS'), 'system message must not contain meeting text');
     assert.match(messages[1].content, /<transcript_excerpts>[\s\S]*IGNORE ALL PREVIOUS INSTRUCTIONS[\s\S]*<\/transcript_excerpts>/);
-    assert.ok(!html.includes('<script>alert') && !html.includes('<img') && !/<a[\s>]/i.test(html));
+    assert.ok(!html.includes('<script>alert') && !html.includes('<img') && !/<a[\s>]/i.test(html.replace('<a class="brand" href="/">VC Bot</a>', '')));
     assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
     assert.ok(html.includes('<p class="q">&lt;b&gt;what?&lt;/b&gt; &quot;quoted&quot; &amp; more</p>'));
     assert.ok(html.includes('<strong>ok</strong>'));
     const tags = new Set([...html.matchAll(/<\/?([a-z0-9]+)/gi)].map((m) => m[1].toLowerCase()));
-    for (const tag of tags) assert.ok(['!doctype', 'html', 'head', 'meta', 'title', 'style', 'script', 'body', 'header', 'main', 'aside', 'div', 'span', 'h1', 'h2', 'p', 'ul', 'li', 'strong', 'form', 'label', 'textarea', 'button', 'svg', 'circle', 'path', 'rect'].includes(tag), `unexpected <${tag}>`);
+    for (const tag of tags) assert.ok(['!doctype', 'html', 'head', 'meta', 'title', 'style', 'script', 'body', 'header', 'a', 'main', 'aside', 'div', 'span', 'h1', 'h2', 'p', 'ul', 'li', 'strong', 'form', 'label', 'textarea', 'button', 'svg', 'circle', 'path', 'rect'].includes(tag), `unexpected <${tag}>`);
     assert.equal((html.match(/<script/gi) ?? []).length, 1, 'the only script is the page\'s own');
   } finally {
     groq.restore();

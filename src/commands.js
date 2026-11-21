@@ -52,7 +52,7 @@ import { canManageOwner, fail, optionMap, reply } from './replies.js';
 import { cmdStartRecording, cmdStopRecording } from './recording-commands.js';
 import { cmdTranscriptSettings } from './transcript-settings-commands.js';
 import { cmdRecordingSettings, cmdRemoveRecordingSetup, cmdSetupRecording } from './setup-commands.js';
-import { NOT_ENABLED, cmdCalendar, cmdGuests, followupFrom, newEventId, resolveTeam, suggestTeams } from './calendar-commands.js';
+import { NOT_ENABLED, cmdCalendar, cmdGuests, followupFrom, newEventId, resolveCalendarAccount, resolveTeam, suggestTeams } from './calendar-commands.js';
 
 const MIN_LEAD_SEC = 60; // a meeting must start at least a minute from now
 const MAX_NAME = 80;
@@ -158,7 +158,7 @@ async function teamLine(db, meeting) {
  * Private confirmation to the person running the command, plus a public notice in the
  * meeting's channel (name, time, location, warning).
  */
-async function confirmAndAnnounce(ctx, meeting, { header, publicHeader, reminderScheduled, ambiguous, extraLines = [] }) {
+async function confirmAndAnnounce(ctx, meeting, { header, publicHeader, reminderScheduled, ambiguous, extraLines = [], pingRoles = false }) {
   const { discord } = ctx;
   const warning = meeting.reminder_minutes > 0 && !reminderScheduled ? NO_REMINDER_WARNING : null;
 
@@ -167,8 +167,9 @@ async function confirmAndAnnounce(ctx, meeting, { header, publicHeader, reminder
   if (ambiguous) text += AMBIGUOUS_NOTE;
 
   const posted = await discord.postMessage(meeting.channel_id, {
-    content: publicNoticeText(meeting, { header: publicHeader, warning }),
-    allowedMentions: allowedMentionsFor(meeting, { ping: false }),
+    // Only a NEW meeting pings its roles here (the roles also ping at the reminder and at the start). The private reply never pings.
+    content: publicNoticeText(meeting, { header: publicHeader, warning, ping: pingRoles }),
+    allowedMentions: allowedMentionsFor(meeting, { ping: pingRoles }),
   });
   text += posted.ok
     ? `\nPosted in <#${meeting.channel_id}> for everyone to see.`
@@ -196,7 +197,9 @@ async function createMeeting(ctx, o, { notes = [] } = {}) {
 
   // Google Calendar: only when the bot has it enabled, this person wants it, and they have connected.
   const wantCalendar = o.calendar !== false;
-  const account = ctx.bridge && wantCalendar ? await getCalendarAccount(db, userId) : null;
+  const calendarEnabled = Boolean(ctx.bridge || ctx.google);
+  const resolved = calendarEnabled && wantCalendar ? await resolveCalendarAccount(ctx, userId, guildId) : { provider: null, reason: null };
+  const account = resolved.provider ? resolved : null;
   const team = o.team !== undefined || account ? await resolveTeam(ctx, o.team) : { ok: true, key: null, name: null };
   if (!team.ok) return fail(team.message);
 
@@ -225,6 +228,7 @@ async function createMeeting(ctx, o, { notes = [] } = {}) {
     created_by: userId,
     duration_min: dur.minutes ?? DEFAULT_DURATION_MIN,
     gcal_meet: o.meet === false ? 0 : 1,
+    gcal_provider: account?.provider === 'oauth' ? 'oauth' : null, // fixed now: the same Google connection must change the event later
     guest_team_key: team.key,
     gcal_owner_id: account ? userId : null,
     gcal_event_id: account ? newEventId() : null, // chosen and saved BEFORE any call to Google, so retries are safe
@@ -245,13 +249,15 @@ async function createMeeting(ctx, o, { notes = [] } = {}) {
   if (account) {
     extraLines.push(await teamLine(db, meeting));
     extraLines.push(
-      `Calendar: will be added to ${account.account_email ?? 'your Google Calendar'} shortly. ` +
+      `Calendar: will be added to ${account.email ?? 'your Google Calendar'} shortly. ` +
         (meeting.gcal_meet ? 'The Meet link is posted in the channel when it is ready.' : 'No Google Meet link will be created.'),
     );
-  } else if (!ctx.bridge) {
+  } else if (!calendarEnabled) {
     if (o.calendar === true) extraLines.push('Calendar: Google Calendar sync is not enabled on this bot, so this meeting was not added.');
   } else if (!wantCalendar) {
     extraLines.push('Calendar: off for this meeting.');
+  } else if (resolved.reason === 'other_team') {
+    extraLines.push('Calendar: not added. Your Google Calendar is connected for a different server. Run /calendar connect here (after /calendar disconnect) to use it in this one.');
   } else {
     extraLines.push('Calendar: not added to Google Calendar. Run /calendar connect first.');
   }
@@ -266,6 +272,7 @@ async function createMeeting(ctx, o, { notes = [] } = {}) {
     reminderScheduled,
     ambiguous: start.ambiguous,
     extraLines,
+    pingRoles: true,
   });
 }
 
@@ -346,9 +353,17 @@ async function cmdUpdate(ctx, o) {
   }
   let attach = null;
   if (o.calendar === true && !synced) {
-    if (!ctx.bridge) return fail(NOT_ENABLED);
-    attach = await getCalendarAccount(db, userId);
-    if (!attach) return fail('I can only add this meeting to your Google Calendar once you connect it. Run `/calendar connect` first.');
+    if (!ctx.bridge && !ctx.google) return fail(NOT_ENABLED);
+    const found = await resolveCalendarAccount(ctx, userId, guildId);
+    if (!found.provider) {
+      return fail(
+        found.reason === 'other_team'
+          ? 'Your Google Calendar is connected for a different server, so I can not add this meeting to it here. Run `/calendar disconnect`, then `/calendar connect` in this server.'
+          : 'I can only add this meeting to your Google Calendar once you connect it. Run `/calendar connect` first.',
+      );
+    }
+    attach = found;
+    changes.gcal_provider = found.provider === 'oauth' ? 'oauth' : null;
     changes.gcal_owner_id = userId;
     changes.gcal_event_id = newEventId();
     changes.gcal_created = 0;
@@ -369,6 +384,17 @@ async function cmdUpdate(ctx, o) {
     (k) => k in changes && !sameValue(changes[k], meeting[k]),
   );
 
+  // A change guests can see is sent to Google AS the calendar's owner: their account emails the update (and invites anyone added),
+  // with the new name and place. So only the owner may make it, even if someone else created the meeting or has Manage Server.
+  // Everyone allowed to edit can still change what stays in Discord (reminder, pings), and can cancel the meeting.
+  if (synced && guestVisible && meeting.gcal_owner_id !== userId) {
+    return fail(
+      `This meeting is on <@${meeting.gcal_owner_id}>'s Google Calendar. Changes to its name, time, place, length, guests, channel or ` +
+        'Meet link are sent to Google as them (their account emails the guests), so only they can make those changes. ' +
+        'You can still change its reminder or pings, or cancel it with `/cancel-meeting`.',
+    );
+  }
+
   try {
     await updateMeeting(db, meeting.id, changes, nowSec);
   } catch (e) {
@@ -386,7 +412,7 @@ async function cmdUpdate(ctx, o) {
   const extraLines = [];
   if (attach) {
     extraLines.push(await teamLine(db, updated));
-    extraLines.push(`Calendar: will be added to ${attach.account_email ?? 'your Google Calendar'} shortly.`);
+    extraLines.push(`Calendar: will be added to ${attach.email ?? 'your Google Calendar'} shortly.`);
   } else if (synced) {
     extraLines.push(await teamLine(db, updated));
     extraLines.push(
@@ -732,11 +758,11 @@ async function handleAutocomplete(interaction, ctx) {
  * `defer` runs a promise after the response is sent (ctx.waitUntil in the Worker).
  * `extraHosts` is for the smoke test only; production never sets it.
  */
-export async function handleInteraction(interaction, { db, discord, bridge = null, recorder = null, defer = null, extraHosts = [], env = {}, origin = '', nowSec }) {
+export async function handleInteraction(interaction, { db, discord, bridge = null, google = null, recorder = null, defer = null, extraHosts = [], env = {}, origin = '', nowSec }) {
   if (interaction.type === InteractionType.PING) return { type: ResponseType.PONG };
 
   const userId = interaction.member?.user?.id ?? interaction.user?.id;
-  const ctx = { db, discord, bridge, recorder, defer, extraHosts, env, origin, nowSec, interaction, userId, guildId: interaction.guild_id };
+  const ctx = { db, discord, bridge, google, recorder, defer, extraHosts, env, origin, nowSec, interaction, userId, guildId: interaction.guild_id };
 
   if (interaction.type === InteractionType.AUTOCOMPLETE) return handleAutocomplete(interaction, ctx);
   if (interaction.type !== InteractionType.APPLICATION_COMMAND) return fail('I can only handle slash commands.');

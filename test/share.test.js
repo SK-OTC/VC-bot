@@ -239,8 +239,9 @@ test('HTML injection: names, speech and model output are escaped, and nothing ca
   assert.ok(html.includes('<strong>bold</strong>'));
   // the only tags in the body are the ones the page itself writes
   const tags = new Set([...html.matchAll(/<\/?([a-z0-9]+)/gi)].map((m) => m[1].toLowerCase()));
-  for (const tag of tags) assert.ok(['!doctype', 'html', 'head', 'meta', 'title', 'style', 'body', 'header', 'main', 'aside', 'div', 'span', 'h1', 'h2', 'p', 'ul', 'li', 'strong', 'form', 'label', 'textarea', 'button', 'svg', 'circle', 'path', 'rect'].includes(tag), `unexpected tag <${tag}>`);
-  assert.ok(!/<a[\s>]/i.test(html) && !/<form/i.test(html) && !/<iframe/i.test(html));
+  for (const tag of tags) assert.ok(['!doctype', 'html', 'head', 'meta', 'title', 'style', 'body', 'header', 'a', 'main', 'aside', 'div', 'span', 'h1', 'h2', 'p', 'ul', 'li', 'strong', 'form', 'label', 'textarea', 'button', 'svg', 'circle', 'path', 'rect'].includes(tag), `unexpected tag <${tag}>`);
+  // the one link on the page is the VC Bot name in the top bar (it goes to /); nothing from names, speech or the model may add another
+  assert.ok(!/<a[\s>]/i.test(html.replace('<a class="brand" href="/">VC Bot</a>', '')) && !/<form/i.test(html) && !/<iframe/i.test(html));
   assert.equal(esc(`<>&"'`), '&lt;&gt;&amp;&quot;&#39;');
 });
 

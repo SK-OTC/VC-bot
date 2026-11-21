@@ -540,16 +540,91 @@ test('update calendar:true attaches your calendar to a meeting that has none, or
   assert.match((await t2.run(meeting('update', { name: 'X', calendar: true }))).data.content, /not enabled/);
 });
 
-test('update by a Manage Server admin syncs through the OWNER\'s script', async () => {
+test('a Manage Server admin cannot send changes to Google as the OWNER: refused, nothing changed, nothing synced', async () => {
   const t = setup();
   await pm(t, 'u1', SCRIPT_A);
   await tz(t, 'u9');
   await connect(t, 'u9', SCRIPT_B, 'admin@gmail.com');
   await create(t);
   await t.sync();
-  await t.run(meeting('update', { name: 'Team Sync', location: 'Room 2' }, { user: 'u9', perms: String(0x8) }));
+  const before = row(t);
+  const admin = { user: 'u9', perms: String(0x8) };
+
+  // Anything guests would see is refused, because it would be sent from u1's Google account.
+  for (const change of [{ location: 'https://evil.example/login' }, { new_name: 'Pay your invoice' }, { time: '4pm' }, { duration: '2h' }, { team: 'none' }]) {
+    const r = await t.run(meeting('update', { name: 'Team Sync', ...change }, admin));
+    assert.equal(isEphemeral(r), true);
+    assert.match(r.data.content, /on <@u1>'s Google Calendar/, JSON.stringify(change));
+    assert.match(r.data.content, /only they can make those changes/);
+    assert.deepEqual(r.data.allowed_mentions, { parse: [] }, 'naming the owner never pings them');
+  }
+  const after = row(t);
+  for (const k of ['name', 'location', 'start_at', 'duration_min', 'guest_team_key', 'gcal_dirty', 'gcal_version']) assert.equal(after[k], before[k], k);
+  await t.sync();
+  assert.deepEqual(t.bridge.calls.map((c) => [c.action, c.url]), [['create', SCRIPT_A]], 'nothing went to Google');
+
+  // What stays in Discord is still allowed, and does not touch Google.
+  const r = await t.run(meeting('update', { name: 'Team Sync', reminder: '30m' }, admin));
+  assert.match(r.data.content, /Meeting updated/);
+  assert.equal(row(t).reminder_minutes, 30);
+  await t.sync();
+  assert.equal(t.bridge.calls.length, 1);
+
+  // The owner can still change it, through their own calendar.
+  await t.run(meeting('update', { name: 'Team Sync', location: 'Room 2' }, { user: 'u1' }));
   await t.sync();
   assert.deepEqual(t.bridge.calls.map((c) => [c.action, c.url]), [['create', SCRIPT_A], ['update', SCRIPT_A]]);
+
+  // And an admin can still cancel it (the cancellation carries no text of theirs).
+  await t.run(meeting('cancel', { name: 'Team Sync' }, admin));
+  await t.sync();
+  assert.deepEqual(t.bridge.calls.at(-1).action, 'cancel');
+});
+
+test('the meeting\'s creator cannot drive someone else\'s calendar either, after that person attached it to theirs', async () => {
+  const t = setup();
+  await tz(t, 'u1');
+  await t.run(meeting('create', { name: 'Team Sync', date: '2026-11-25', time: '3pm', calendar: false }, { user: 'u1' })); // u1 creates, no calendar
+  await tz(t, 'u9');
+  await connect(t, 'u9', SCRIPT_B, 'admin@gmail.com');
+  const admin = { user: 'u9', perms: String(0x8) };
+  await t.run(meeting('update', { name: 'Team Sync', calendar: true }, admin)); // the admin puts it on THEIR calendar
+  await t.sync();
+  assert.equal(row(t).gcal_owner_id, 'u9');
+
+  const r = await t.run(meeting('update', { name: 'Team Sync', location: 'https://evil.example' }, { user: 'u1' }));
+  assert.match(r.data.content, /on <@u9>'s Google Calendar/);
+  await t.sync();
+  assert.deepEqual(t.bridge.calls.map((c) => [c.action, c.url]), [['create', SCRIPT_B]]);
+});
+
+test('a guest team change only updates meetings on the changer\'s own Google Calendar; others are left for their owner', async () => {
+  const t = setup();
+  await pm(t, 'u2', SCRIPT_B); // u2 owns the team "Design"
+  await tz(t, 'u1');
+  await connect(t, 'u1', SCRIPT_A, 'pm@gmail.com');
+  // An admin PM (u1) schedules a meeting that invites u2's team, on u1's calendar.
+  await create(t, { team: 'Design' }, { user: 'u1', perms: String(0x8) });
+  await create(t, { name: 'Own', team: 'Design' }, { user: 'u2' }); // and u2's own meeting with the same team
+  await t.sync();
+  const calls = t.bridge.calls.length;
+
+  // u2 adds an address to their team: only u2's own meeting is re-synced; u1's is not sent from u1's account.
+  const r = await t.run(guests('add', { team: 'Design', emails: 'stranger@evil.example' }, { user: 'u2' }));
+  assert.match(r.data.content, /1 upcoming meeting will be updated on Google Calendar shortly/);
+  assert.match(r.data.content, /1 upcoming meeting on other people's Google Calendars was not changed there/);
+  await t.sync();
+  const synced = t.bridge.calls.slice(calls);
+  assert.equal(synced.length, 1);
+  assert.equal(synced[0].url, SCRIPT_B, 'only through the changer\'s own calendar');
+  assert.ok(synced[0].guests.includes('stranger@evil.example'));
+  assert.equal(rows(t, "name = 'Team Sync'")[0].gcal_dirty, 0, 'u1\'s meeting was not queued');
+
+  // Deleting the team: u2's meeting is updated without guests; u1's forgets the team in Discord but is not sent to Google.
+  const del = await t.run(guests('delete-team', { team: 'Design' }, { user: 'u2' }));
+  assert.match(del.data.content, /1 upcoming meeting on other people's Google Calendars keeps these guests there/);
+  assert.equal(rows(t, "name = 'Team Sync'")[0].guest_team_key, null);
+  assert.equal(rows(t, "name = 'Team Sync'")[0].gcal_dirty, 0);
 });
 
 test('cancel: queues the Google event for deletion; meetings that never had one are not queued', async () => {
@@ -635,7 +710,7 @@ test('sync: create sends the right payload, posts only the Meet link publicly, a
   const pub = t.discord.posts.slice(before);
   assert.equal(pub.length, 1);
   assert.equal(pub[0].channelId, 'c1');
-  assert.equal(pub[0].content, 'Google Meet link for Team Sync: https://meet.google.com/abc-defg-hij');
+  assert.equal(pub[0].content, 'Google Meet link for Team Sync: [Join the call](<https://meet.google.com/abc-defg-hij>)');
   assert.deepEqual(pub[0].allowedMentions, { parse: [] }); // no role pings
 
   assert.equal(t.discord.followups.length, 1);
@@ -1063,6 +1138,6 @@ test('sync: a good Meet link is still posted and saved exactly as before', async
   await create(t);
   const before = t.discord.posts.length;
   await t.sync();
-  assert.match(t.discord.posts[before].content, /Google Meet link for Team Sync: https:\/\/meet\.google\.com\/abc-defg-hij/);
+  assert.match(t.discord.posts[before].content, /Google Meet link for Team Sync: \[Join the call\]\(<https:\/\/meet\.google\.com\/abc-defg-hij>\)/);
   assert.equal(row(t).meet_link, 'https://meet.google.com/abc-defg-hij');
 });

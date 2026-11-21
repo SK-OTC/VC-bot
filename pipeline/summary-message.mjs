@@ -2,15 +2,15 @@
 //
 // Discord's Create Message "content" is "up to 2000 characters" (https://docs.discord.com/developers/resources/message).
 // The page on the Worker always has the FULL summary. Only the copy in this message is shortened, and only when it does not
-// fit: the shortened summary ends with an ellipsis, and the link text after it is always complete (the link is wrapped in
-// <...>, which stops Discord from adding a preview card). Lengths are counted with JavaScript's string length, which is never
+// fit: the shortened summary ends with an ellipsis, and the link after it is always complete (it is a hyperlink, so only its
+// short text shows, and the <...> around the address stops Discord from adding a preview card). Lengths are counted with JavaScript's string length, which is never
 // less than the number of characters Discord counts, so staying under the limit here keeps the message under it there too.
 export const DISCORD_CONTENT_LIMIT = 2000;
 
 /** The link lines that end the message. `expiresAt` is a unix time in seconds (shown as a Discord date), or null. */
 export function linkBlock(url, expiresAt = null) {
   const until = expiresAt ? ` until <t:${Math.trunc(expiresAt)}:D>` : '';
-  return `\n\n🔗 **Full summary and Q&A:** <${url}>\nAnyone with the link can open and edit it${until}.`;
+  return `\n\n🔗 [Full summary and Q&A](<${url}>)\nAnyone with the link can open and edit it${until}.`;
 }
 
 /** At most `max` characters of `text`, never cutting a character (surrogate pair) in half. */

@@ -521,8 +521,9 @@ test('several roles can be pinged: stored together, listed, and all allowed in r
   const r = await t.run(slash('create', { name: 'Big Day', date: '2026-11-25', time: '3pm', ping: 'r1', ping_2: 'r2', ping_3: 'r3' }));
   assert.match(r.data.content, /Pings: <@&r1> <@&r2> <@&r3>/);
   assert.equal(t.db.sql('SELECT role_id FROM meetings')[0].role_id, 'r1,r2,r3');
-  assert.deepEqual(r.data.allowed_mentions, { parse: [] }); // the announcement itself pings nobody
-  assert.deepEqual(t.discord.posts[0].allowedMentions, { parse: [] });
+  assert.deepEqual(r.data.allowed_mentions, { parse: [] }); // the private reply never pings anybody
+  assert.equal(t.discord.posts[0].content.split('\n')[0], '<@&r1> <@&r2> <@&r3> **New meeting: Big Day**'); // the public announcement pings the roles
+  assert.deepEqual(t.discord.posts[0].allowedMentions, { parse: [], roles: ['r1', 'r2', 'r3'] });
 
   const dup = await t.run(slash('create', { name: 'Dup', date: '2026-11-25', time: '3pm', ping: 'r1', ping_2: 'r1' }));
   assert.match(dup.data.content, /Pings: <@&r1>$/m);
@@ -603,4 +604,39 @@ test('create: a brand-new name never mentions saved settings; a past meeting is 
   await t.run(slash('cancel', { name: 'Brand New' }));
   const again = await t.run(slash('create', { name: 'brand new', date: '2026-11-27' }));
   assert.match(again.data.content, /Used the saved settings from your earlier meeting \*\*Brand New\*\*\./);
+});
+
+test('a new meeting pings its roles in the announcement; no roles means no ping; an update and the private reply never ping', async () => {
+  const t = setup();
+  await t.run(setTz('America/Chicago'));
+
+  // no roles: the announcement is exactly as before and pings nobody
+  await t.run(slash('create', { name: 'Plain', date: '2026-11-25', time: '3pm' }));
+  assert.ok(t.discord.posts[0].content.startsWith('**New meeting: Plain**'));
+  assert.deepEqual(t.discord.posts[0].allowedMentions, { parse: [] });
+
+  // with a role: the role is mentioned, and ONLY that role is allowed to be pinged
+  const r = await t.run(slash('create', { name: 'Team Sync', date: '2026-11-26', time: '3pm', ping: 'r9' }));
+  const announced = t.discord.posts[1];
+  assert.ok(announced.content.startsWith('<@&r9> **New meeting: Team Sync**'));
+  assert.deepEqual(announced.allowedMentions, { parse: [], roles: ['r9'] });
+  assert.match(r.data.content, /Pings: <@&r9>/);
+  assert.deepEqual(r.data.allowed_mentions, { parse: [] });
+
+  // changing the meeting does not ping again
+  await t.run(slash('update', { name: 'Team Sync', location: 'Room 4' }));
+  const updated = t.discord.posts[2];
+  assert.ok(updated.content.startsWith('**Meeting updated: Team Sync**'));
+  assert.ok(!updated.content.includes('<@&'));
+  assert.deepEqual(updated.allowedMentions, { parse: [] });
+});
+
+test('a meeting scheduled from a saved preset pings the preset\'s roles too', async () => {
+  const t = setup();
+  await t.run(setTz('America/Chicago'));
+  await t.run(slash('preset-save', { name: 'Standup', time: '9am', ping: 'r7' }));
+  await t.run(slash('create', { name: 'Standup', date: '2026-11-25' }));
+  const post = t.discord.posts.at(-1);
+  assert.ok(post.content.startsWith('<@&r7> **New meeting: Standup**'));
+  assert.deepEqual(post.allowedMentions, { parse: [], roles: ['r7'] });
 });

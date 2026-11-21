@@ -2,9 +2,10 @@ name = "vc-bot"
 main = "src/index.js"
 compatibility_date = "2025-09-01"
 
-# Runs the reminder scheduler every minute.
+# "* * * * *" runs the reminder scheduler and the Google Calendar sync every minute.
+# "0 6 * * 1" (Mondays 06:00 UTC) refreshes every connected Google sign-in once, so a revoked or expired one is found early (src/calendar-keepalive.js).
 [triggers]
-crons = ["* * * * *"]
+crons = ["* * * * *", "0 6 * * 1"]
 
 [[d1_databases]]
 binding = "DB"
@@ -26,6 +27,10 @@ index_name = "vc-bot-chunks"
 
 [vars]
 DISCORD_API_BASE = "https://discord.com/api/v10"
+# Google Calendar sign-in (/calendar connect) is configured with secrets, none of them set here:
+#   npx wrangler secret put GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / TOKEN_ENC_KEY (32 random bytes, base64)
+#   npx wrangler secret put GOOGLE_REDIRECT_URI   (must match, exactly, the redirect address saved on the OAuth client in Google Cloud Console)
+# Do not also add any of these as a [vars] entry: a secret and a var with the same name make the deploy fail.
 # /start-recording runs the recorder workflow in this repository. The token is a secret:
 #   npx wrangler secret put GITHUB_DISPATCH_TOKEN   (fine-grained token, this repo only, "Actions: Read and write")
 GITHUB_REPO = "SK-OTC/VC-bot"

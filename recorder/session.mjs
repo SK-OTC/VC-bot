@@ -14,7 +14,10 @@ import { batchAttachments } from './stop.mjs';
  * speakers: [{ label, name, files }]     (name may be null)
  * io: { postTranscript({content, file:{name, data}}) -> {messageId}, postText(text, {replyTo}) -> {messageId},
  *       dm(text, {file}) -> {messageId} (a private message to whoever started the recording), postBackup(content, files) }
- * Returns { ok, id, notes[] } and never throws for a model, storage or backup problem: a transcript that exists must be delivered.
+ *       (postBackup's files are { path } on disk, or { data } in memory, each with a name)
+ * Returns { ok, id, notes[], posted, fileSentTo, lost } and never throws for a posting, model, storage or backup problem: a
+ * transcript that exists must be delivered. If posting the file fails it is still saved, and the file goes privately to whoever
+ * started the recording or else to the backup channel. `lost` is true only when it could be kept nowhere at all.
  */
 export async function finishSession({ speakers, offsetSec, startedAt, cfg, engine, fallbackEngine, budgetSec = null, chat, providers = null, io, log = () => {}, sessionId = '', voiceChannelId, guildId }) {
   const notes = [];
@@ -48,7 +51,19 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
     const when = new Date(startedAt).toISOString().slice(0, 16).replace('T', ' ');
     const heading = `**${cfg.team.name} meeting transcript** · ${when} UTC · ${hhmmss(lengthSec)} · ID \`${id}\``;
     const transcriptFile = { name: `transcript-${id}.txt`, data: Buffer.from(text, 'utf8') };
-    const posted = post ? await io.postTranscript({ content: heading, file: transcriptFile }) : { messageId: null };
+    // A failed post (for example the bot may not Attach Files there, or Discord is down) must not lose the transcript: it is
+    // still saved below and the file is sent another way (step 3b). Only Discord's short error text is kept, never content.
+    let posted = { messageId: null };
+    let postError = null;
+    if (post) {
+      try {
+        posted = await io.postTranscript({ content: heading, file: transcriptFile });
+      } catch (e) {
+        postError = String(e?.message ?? e).slice(0, 100);
+        notes.push(`could not post the transcript file: ${postError}`);
+        log(`could not post the transcript file: ${postError}`);
+      }
+    }
 
     // 2. Summary and action items. Models are tried in order (Cloudflare Llama, then Groq).
     const chain = providers ?? (chat ? [{ name: chat.name ?? 'groq-gpt-oss', label: chat.label ?? 'the language model', chat }] : []);
@@ -103,17 +118,64 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
       notes.push('storage not configured (WORKER_URL / WORKER_SHARED_SECRET)');
     }
 
+    // 3b. The file could not be posted: send it privately to whoever started the recording, or else to the backup channel.
+    let fileSentTo = null; // 'dm' | 'backup' | null
+    if (postError) {
+      if (dmUserId) {
+        try {
+          await io.dm(`The transcript file for the ${cfg.team.name} meeting could not be posted in the channel, so here it is.`, { file: transcriptFile });
+          fileSentTo = 'dm';
+        } catch {
+          notes.push('could not send the transcript file privately either');
+        }
+      }
+      if (!fileSentTo && cfg.team.backupChannelId) {
+        try {
+          await io.postBackup(`Transcript \`${id}\` (${cfg.team.name}): it could not be posted in the transcript channel, so it is kept here.`, [transcriptFile]);
+          fileSentTo = 'backup';
+        } catch {
+          notes.push('could not put the transcript file in the backup channel either');
+        }
+      }
+    }
+    // Nothing kept anywhere: not posted, not saved, not sent. The caller reports this run as failed.
+    const lost = Boolean(postError) && !stored.ok && !fileSentTo;
+    if (lost) notes.push('the transcript could not be posted, saved or sent anywhere');
+
     // 4. Deliver the summary: in the channel (post on) or in a private message to whoever started the recording (post off).
     // With a link: ONE message with the summary (shortened only if it does not fit Discord's limit) and the link, which is always
     // complete. Without a link (saving off, or the save failed): the whole summary, over as many messages as it needs.
+    // Once posting the file has failed, a channel that also refuses text hands over to the private message (if there is someone).
+    let channelWorks = true;
     const send = post
-      ? (content) => io.postText(content, { replyTo: posted.messageId })
+      ? async (content) => {
+          if (channelWorks) {
+            try {
+              return await io.postText(content, { replyTo: posted.messageId });
+            } catch (e) {
+              if (!(postError && dmUserId)) throw e;
+              channelWorks = false;
+            }
+          }
+          return io.dm(content);
+        }
       : dmUserId
         ? (content) => io.dm(content)
         : null;
     if (!send) notes.push('nothing was delivered: posting is off and nobody started this recording (a scheduled one), so there is nobody to send the link to');
     else {
       try {
+        if (postError) {
+          // Tell the channel what happened to the file (the channel may still accept text, e.g. when only Attach Files is missing).
+          const where = fileSentTo === 'dm'
+            ? 'It was sent privately to the person who started the recording.'
+            : fileSentTo === 'backup'
+              ? 'It was put in the audio backup channel.'
+              : stored.ok
+                ? 'It was saved for the web page below.'
+                : 'It could not be kept anywhere else.';
+          await send(`I could not post the transcript file here (${postError}). ${where} Check that I may Attach Files in this channel.`);
+        }
         const linked = stored.ok && stored.shareUrl;
         if (linked) {
           const summaryText = summary.ok ? summary.text : body.trim() ? `Summary unavailable (${summary.reason}).` : 'Nothing could be transcribed.';
@@ -122,7 +184,16 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
           if (summary.ok) for (const p of splitMessage(summary.text, 1900)) await send(p);
           else if (body.trim()) await send(`Summary unavailable (${summary.reason}). The transcript is complete.`);
           if (wantSave && !stored.ok) {
-            await send(`This transcript could not be saved for the web page and questions (${stored.reason}). ${post ? 'The file above is the only copy.' : 'The file attached to the next message is the only copy.'}`);
+            const onlyCopy = !post
+              ? 'The file attached to the next message is the only copy.'
+              : !postError
+                ? 'The file above is the only copy.'
+                : fileSentTo === 'dm'
+                  ? 'The file sent privately to the person who started the recording is the only copy.'
+                  : fileSentTo === 'backup'
+                    ? 'The file in the audio backup channel is the only copy.'
+                    : 'No copy of it could be kept.';
+            await send(`This transcript could not be saved for the web page and questions (${stored.reason}). ${onlyCopy}`);
             if (!post) await io.dm('Transcript file', { file: transcriptFile }); // posting is off, so the file has not been sent anywhere yet
           }
         }
@@ -146,7 +217,7 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
       }
     }
 
-    return { ok: true, id, notes, stats: { speakers: stats.speakers.length, batches: stats.batches, failed: stats.failedBatches, fallback: stats.fallbackBatches, dropped: stats.droppedSegments }, stored: stored.ok, summarised: summary.ok };
+    return { ok: true, id, notes, stats: { speakers: stats.speakers.length, batches: stats.batches, failed: stats.failedBatches, fallback: stats.fallbackBatches, dropped: stats.droppedSegments }, stored: stored.ok, summarised: summary.ok, posted: post && !postError, fileSentTo, lost };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

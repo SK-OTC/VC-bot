@@ -95,7 +95,7 @@ test('GET /t/<token>/admin shows the editor with the current summary, and the tr
   assert.ok(html.includes('Alice said the budget is forty thousand'));
   assert.ok(!html.includes('the budget is forty thousand dollars'), 'transcript text is not on the page');
   assert.ok(!html.includes('Restore the generated summary'), 'nothing to restore before an edit');
-  assert.ok(!/<script|<a[\s>]|<img/i.test(html));
+  assert.ok(!/<script|<a[\s>]|<img/i.test(html.replace('<a class="brand" href="/">VC Bot</a>', '')));
   // the page has no way to send transcript text anywhere: its only fields are the summary and the restore button
   assert.deepEqual([...html.matchAll(/<(?:textarea|input)[^>]*name="([^"]+)"/g)].map((m) => m[1]), ['summary']);
 });

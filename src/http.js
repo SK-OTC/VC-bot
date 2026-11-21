@@ -3,9 +3,12 @@
 //   /api/...        recorder endpoints (own secret)
 //   /t/<token>      a private meeting page: summary plus "ask a question" (the token in the address is the only key)
 //   /t/<token>/admin  edit the summary's text (the same key; no other sign-in). The transcript is never editable.
+//   /oauth/google/callback  where Google sends a PM back after the Calendar sign-in (src/calendar-oauth-http.js)
 //   /privacy        the public privacy policy (the only page crawlers are allowed to read)
 //   /robots.txt     tells well-behaved crawlers to stay away from everything except /privacy
 import { handleApi } from './api.js';
+import { handleGoogleCallback } from './calendar-oauth-http.js';
+import { GOOGLE_CALLBACK_PATH } from './google-oauth.js';
 import { MAX_QUESTION_CHARS, answerQuestion, buildMessages, cleanQuestion, joinContext, questionLimits, questionsEnabled, selectContext, takeQuestionSlot, usableQaProviders } from './ask.js';
 import { neuronsToday, softCaps } from './meter.js';
 import { secondsUntilMidnightUtc } from './neurons.js';
@@ -160,6 +163,7 @@ export async function handleHttp(request, env, ctx, nowSec) {
   if (url.pathname === '/privacy' && (request.method === 'GET' || request.method === 'HEAD')) {
     return new Response(request.method === 'HEAD' ? null : privacyPage({ contactEmail: env.PRIVACY_CONTACT_EMAIL }), { headers: PRIVACY_HEADERS });
   }
+  if (url.pathname === GOOGLE_CALLBACK_PATH) return handleGoogleCallback(request, env, ctx, url, nowSec);
   if (url.pathname.startsWith('/t/')) return handleShare(request, env, ctx, url, nowSec);
   return null;
 }

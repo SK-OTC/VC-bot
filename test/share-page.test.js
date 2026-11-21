@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { renderNote, transcriptPage, notFoundPage, esc, SECURITY_HEADERS } from '../src/share-page.js';
+import { renderNote, transcriptPage, notFoundPage, adminPage, esc, SECURITY_HEADERS } from '../src/share-page.js';
+import { privacyPage } from '../src/privacy-page.js';
 import { CHAT_SCRIPT, CHAT_SCRIPT_HASH } from '../src/chat-script.js';
 
 const NOW = Math.floor(Date.UTC(2026, 10, 19, 12, 0, 0) / 1000);
@@ -61,10 +62,10 @@ test('page: it is dark, has the top bar without any sign-in, and uses no outside
   const html = transcriptPage({ ...base, summary_text: '**Summary**\n- x' }, { enabled: true, maxChars: 500 });
   assert.match(html, /<meta name="color-scheme" content="dark">/);
   assert.match(html, /color-scheme:dark/);
-  assert.match(html, /<header class="top"><span class="brand">VC Bot<\/span><\/header>/);
+  assert.match(html, /<header class="top"><a class="brand" href="\/">VC Bot<\/a><\/header>/);
   assert.ok(!/sign.?in|log.?in|granola/i.test(html), 'no sign-in and no other product name');
   assert.ok(!/<img|url\(|@import|@font-face|https?:\/\//i.test(html), 'no images, no outside files, no addresses');
-  assert.ok(!/<a[\s>]|<iframe|<link/i.test(html));
+  assert.ok(!/<a[\s>]|<iframe|<link/i.test(html.replace('<a class="brand" href="/">VC Bot</a>', '')));
   assert.ok(!/<script[^>]*\ssrc=/i.test(html), 'no script is loaded from anywhere');
 });
 
@@ -157,7 +158,7 @@ test('page: a narrow screen stacks the panel under the note, and the colours pas
 
 test('not found page: same dark shell, one plain message, nothing about why', () => {
   const html = notFoundPage();
-  assert.match(html, /<header class="top"><span class="brand">VC Bot<\/span><\/header>/);
+  assert.match(html, /<header class="top"><a class="brand" href="\/">VC Bot<\/a><\/header>/);
   assert.match(html, /This link is not available/);
   assert.ok(!/<form|<textarea|<aside/.test(html));
   assert.equal(esc('<&>"\''), '&lt;&amp;&gt;&quot;&#39;');
@@ -172,4 +173,20 @@ test('page: the top bar stays pinned while scrolling (sticky, above the content,
   assert.match(top, /background:var\(--bg\)/, 'opaque, so text scrolling underneath is hidden');
   const barHeight = Number(/height:(\d+)px/.exec(top)[1]);
   assert.ok(/\.chat\{([^}]*)\}/.exec(css)[1].includes(`position:sticky;top:${barHeight}px;height:calc(100vh - ${barHeight}px)`));
+});
+
+test('the VC Bot name in the top bar is a link to the home page (/) on every page, and is the only link there', async () => {
+  const pages = {
+    'meeting summary': transcriptPage({ ...base, summary_text: '**Summary**\n- x' }, { enabled: true, maxChars: 500 }),
+    'not found': notFoundPage(),
+    'edit page': adminPage({ ...base, summary_text: '**Summary**\n- x' }, {}),
+    'privacy': privacyPage({}),
+  };
+  for (const [name, html] of Object.entries(pages)) {
+    assert.ok(html.includes('<header class="top"><a class="brand" href="/">VC Bot</a></header>'), name);
+    const header = /<header class="top">(.*?)<\/header>/.exec(html)[1];
+    assert.equal((header.match(/<a[\s>]/g) ?? []).length, 1, name);
+    assert.ok(!/<a[\s>]/i.test(html.replace('<a class="brand" href="/">VC Bot</a>', '').replace(/<a href="https:[^>]*>[^<]*<\/a>/g, '')), `${name}: no other link was added`);
+  }
+  assert.match(pages['meeting summary'], /\.brand\{[^}]*text-decoration:none/);
 });

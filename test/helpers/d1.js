@@ -73,6 +73,11 @@ export function createFakeDiscord(script = [], { voice = {}, channels = {} } = {
       edits.push({ appId, token, ...payload });
       return next();
     },
+    dms: [],
+    async sendDirectMessage(userId, payload) {
+      this.dms.push({ userId, ...payload });
+      return { ok: true };
+    },
     /** channels: { <channelId>: { type, guildId, name } }; a channel not listed is one the bot cannot see (HTTP 404). */
     async getChannel(channelId) {
       const c = channels[channelId];
