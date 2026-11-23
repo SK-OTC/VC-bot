@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { createTestDb } from './helpers/d1.js';
 import { addNeurons, neuronsToday, softCaps } from '../src/meter.js';
-import { LLAMA_MODEL, secondsUntilMidnightUtc } from '../src/neurons.js';
+import { GEMMA_MODEL, LLAMA_MODEL, secondsUntilMidnightUtc } from '../src/neurons.js';
 import { NOT_IN_TRANSCRIPT, QA_OUTPUT_TOKENS, askCloudflare, buildMessages, qaOrder, usableQaProviders } from '../src/ask.js';
 
 const NOW = Math.floor(Date.UTC(2026, 10, 19, 12, 0, 0) / 1000); // 12:00 UTC
@@ -14,14 +14,14 @@ const GROQ_KEY = 'gsk_test_key_that_must_never_leak_123';
 
 const defaultChat = () => ({ response: 'Alice said the budget is forty thousand dollars [00:02:00].', usage: { prompt_tokens: 900, completion_tokens: 40, neurons: 25.5 } });
 
-/** Workers AI: answers chat requests (the Llama model) with `chat(n, input)` and embeddings with a fixed vector. */
+/** Workers AI: answers chat requests (Gemma 4 or Llama 3.3) with `chat(n, input)` and embeddings with a fixed vector. */
 function fakeAi(chat = defaultChat) {
   return {
     chatCalls: [],
     embedCalls: [],
     chat,
     async run(model, input) {
-      if (model === LLAMA_MODEL) {
+      if (model === GEMMA_MODEL || model === LLAMA_MODEL) {
         this.chatCalls.push({ model, input });
         const r = this.chat(this.chatCalls.length, input);
         if (r instanceof Error) throw r;
@@ -177,7 +177,7 @@ test('upload: ai_usage goes on the meter (summary), is validated, and is optiona
 
 // ---------- Q&A through the Workers AI binding ----------
 
-test('Q&A: Llama answers through the AI binding with the right request, and its Neurons go on the meter', async () => {
+test('Q&A: Gemma 4 answers through the AI binding with thinking off and the right request, and its Neurons go on the meter', async () => {
   const t = setup();
   const path = await t.upload();
   const groq = fakeGroq();
@@ -193,8 +193,11 @@ test('Q&A: Llama answers through the AI binding with the right request, and its 
     assert.match(html, /can be wrong/);
     assert.equal(t.ai.chatCalls.length, 1);
     const { model, input } = t.ai.chatCalls[0];
-    assert.equal(model, LLAMA_MODEL);
+    assert.equal(model, GEMMA_MODEL);
+    assert.deepEqual(input.chat_template_kwargs, { enable_thinking: false });
     assert.equal(input.max_tokens, 500);
+    assert.match(input.messages[0].content, /copied exactly as it is written at the start of the line you used/);
+    assert.match(input.messages[0].content, /if something is only possible or unclear, say so/);
     assert.equal(QA_OUTPUT_TOKENS, 500);
     assert.equal(input.messages[0].role, 'system');
     assert.match(input.messages[1].content, /forty thousand dollars/);
@@ -206,7 +209,7 @@ test('Q&A: Llama answers through the AI binding with the right request, and its 
     Object.assign(console, keep);
   }
   const logs = seen.join('\n');
-  assert.match(logs, /qa answered by cloudflare-llama neurons=25\.50 ms=\d+/);
+  assert.match(logs, /qa answered by cloudflare-gemma neurons=25\.50 ms=\d+/);
   for (const forbidden of ['SECRET-QUESTION-TEXT', 'forty thousand', 'Alice said', GROQ_KEY, path.split('/t/')[1]]) assert.ok(!logs.includes(forbidden), `logged: ${forbidden}`);
 });
 
@@ -407,11 +410,22 @@ test('embeddings: indexing and each question add an estimate of their Neurons to
 
 test('which models serve: QA_MODEL_ORDER picks and orders them; an unusable one is skipped', () => {
   const AI = { run() {} };
-  assert.deepEqual(qaOrder({}), ['cloudflare-llama', 'groq-gpt-oss']);
+  assert.deepEqual(qaOrder({}), ['cloudflare-gemma', 'groq-gpt-oss']);
   assert.deepEqual(qaOrder({ QA_MODEL_ORDER: 'groq-gpt-oss,cloudflare-llama' }), ['groq-gpt-oss', 'cloudflare-llama']);
-  assert.deepEqual(qaOrder({ QA_MODEL_ORDER: 'nonsense' }), ['cloudflare-llama', 'groq-gpt-oss']);
-  assert.deepEqual(usableQaProviders({ AI, GROQ_API_KEY: 'k' }), ['cloudflare-llama', 'groq-gpt-oss']);
-  assert.deepEqual(usableQaProviders({ AI }), ['cloudflare-llama']);
+  assert.deepEqual(qaOrder({ QA_MODEL_ORDER: 'nonsense' }), ['cloudflare-gemma', 'groq-gpt-oss']);
+  assert.deepEqual(usableQaProviders({ AI, GROQ_API_KEY: 'k' }), ['cloudflare-gemma', 'groq-gpt-oss']);
+  assert.deepEqual(usableQaProviders({ AI }), ['cloudflare-gemma']);
+  assert.deepEqual(usableQaProviders({ AI, QA_MODEL_ORDER: 'cloudflare-llama,cloudflare-gemma' }), ['cloudflare-llama', 'cloudflare-gemma']);
   assert.deepEqual(usableQaProviders({ GROQ_API_KEY: 'k' }), ['groq-gpt-oss']);
   assert.deepEqual(usableQaProviders({}), []);
+});
+
+test('Q&A: QA_MODEL_ORDER=cloudflare-llama still uses Llama 3.3 (no Gemma-only fields), and its Neurons are counted', async () => {
+  const t = setup({ ai: fakeAi(() => ({ response: 'Llama answer [00:02:00].' })), envExtra: { QA_MODEL_ORDER: 'cloudflare-llama' } });
+  const path = await t.upload();
+  assert.match(await (await t.ask(path, 'what was said about money?')).text(), /Llama answer/);
+  const { model, input } = t.ai.chatCalls[0];
+  assert.equal(model, LLAMA_MODEL);
+  assert.equal(input.chat_template_kwargs, undefined);
+  assert.ok((await neuronsToday(t.db, NOW)).qa > 0, 'worked out from the tokens when there is no usage figure');
 });

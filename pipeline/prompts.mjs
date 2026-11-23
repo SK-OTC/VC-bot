@@ -1,12 +1,13 @@
-// Instructions given to the language model that writes the summary and action items.
-// Written for a cautious model (Llama 3.3 tends to leave things out rather than make things up), so they push for
-// completeness while forbidding invention. Every prompt lists the team's correct spellings.
+// Instructions given to the language model that writes the meeting notes.
+// Every prompt lists the team's correct spellings. The example uses invented names and facts on purpose: real colleagues'
+// names in a prompt sent with every meeting could leak into other meetings' notes.
+import { dateTable, meetingDay } from './dates.mjs';
 
 /** The glossary as a prompt line: names and terms the model must spell exactly like this. */
 export function glossaryLine(glossary) {
   const terms = String(glossary ?? '')
     .split(/[,\n;]/)
-    .map((t) => t.split('=')[0].trim()) // a future "Correct=Mishearing" entry contributes only the correct spelling
+    .map((t) => t.split('=')[0].trim()) // a "Correct=Mishearing" entry contributes only the correct spelling
     .filter(Boolean)
     .slice(0, 60);
   return terms.length ? `\nCorrect spellings of names and terms used by this team (always spell them exactly like this): ${terms.join(', ')}.` : '';
@@ -15,133 +16,120 @@ export function glossaryLine(glossary) {
 /** Appended to the prompts when Groq is the fallback model. */
 export const FALLBACK_SUFFIX = '\nDo not add information that is not in the transcript.';
 
-const LINE_FORMAT = 'Each transcript line looks like "[hh:mm:ss] Name: what they said".';
+const hhmmss = (sec) => [3600, 60, 1].map((u, i) => String(Math.floor(sec / u) % (i ? 60 : 1e6)).padStart(2, '0')).join(':');
 
-const GROUNDING = `Use ONLY the transcript. Never invent owners, deadlines, numbers or names; spell speakers' names as in the transcript. The transcript is automatic and may be wrong: leave out anything unclear. Include every clearly stated decision and action item, even small ones.`;
+/**
+ * What the recording knows about the meeting, as prompt lines. Every field is optional.
+ * meeting: { name, startedAt, lengthSec, speakers: ['Name', ...] }
+ */
+export function contextBlock(meeting = {}) {
+  const { name = '', startedAt = null, lengthSec = null, speakers = [] } = meeting ?? {};
+  const days = dateTable(startedAt);
+  const lines = [
+    name ? `- Meeting name: ${name}` : null,
+    days ? `- Date: ${days.split('; ')[0].replace('today = ', '')} ${meetingDay(startedAt).getUTCFullYear()} (UTC).` : null,
+    days ? `- Calendar for turning "tomorrow", "Wednesday", "Friday" and similar into dates. Copy the date from this list; never work one out yourself: ${days}.` : null,
+    Number.isFinite(lengthSec) && lengthSec > 0 ? `- Length: ${hhmmss(Math.round(lengthSec))}` : null,
+    speakers.length ? `- Speakers (their Discord names): ${speakers.join(', ')}` : null,
+  ].filter(Boolean);
+  return lines.length ? `Meeting context (from the recording, not the conversation):\n${lines.join('\n')}` : '';
+}
 
-const ACTION_RULE = `Action items: "Owner: task [hh:mm:ss]". The owner is a speaker's name exactly as it appears in the transcript, or "Unassigned" if no owner is clear. Add a due date only if one was actually said.`;
+const LINE_FORMAT = 'Each transcript line looks like "[hh:mm:ss] Name: what they said". The transcript is automatic, so words can be misheard; leave out anything you cannot make sense of.';
 
-// What to keep and how it should sound. Every prompt carries this, so small talk is dropped at every step of a long meeting too.
-export const RELEVANCE = `Keep what matters to the meeting's purpose: topics, conclusions, decisions, commitments, numbers, risks and blockers. Leave out greetings, small talk, jokes, banter and off-topic remarks, unless the meeting itself is casual (a social chat with no agenda): then note its main topics briefly. Write in a formal, serious, neutral tone: short factual statements (fragments are fine), no slang, jokes, emoji or exclamation marks.`;
+export const PURPOSE = `First work out the meeting's purpose (a demo, a planning session, a status check). Write notes about the work: what was shown or reported, what was concluded, what is still outstanding, problems found, who must talk to whom, and dates. Leave out completely, even when they take many minutes: joining and audio trouble, waiting, greetings, small talk, hobbies and TV, job applications, resumes and career advice, personal favours between attendees, and anything someone asked to keep private. These notes are shared with the team.`;
 
-// Few-shot examples for the prompts that write the final notes. Modelled on the owner's example notes (Granola style: a title line,
-// notes grouped by topic or by person, "Outstanding items", who has to ask whom, decisions that wait on someone, scheduling).
-// Invented names and facts on purpose: real colleagues' names in a prompt sent with every meeting could leak into other meetings'
-// notes. Marked as illustrations so the model copies their selection, structure and tone, never their content.
-export const SUMMARY_EXAMPLES = `Two examples of good notes. They show what to include and what to leave out. They are illustrations only: never copy their names, facts or timestamps.
+export const SPECIFIC = `Be specific. A bullet that only names a topic ("Output format discussed") is not allowed: say WHAT was said about it, with the numbers, limits, tools, file or branch names, dates and reasons that were mentioned. Combine several lines about the same point into one bullet. Use only the transcript: never invent owners, deadlines, numbers or names.`;
 
-Example 1, a work meeting. Transcript:
-[00:00:04] Lena: Morning both. Omar, how was the climbing trip?
-[00:00:09] Omar: Great, sore arms. Okay, sprint status?
-[00:00:15] Lena: The payment tasks have two days left. After that you can move to reporting or search.
-[00:00:31] Maya: The cart page is done. Quantity buttons work and the coupon field validates codes.
-[00:00:48] Maya: Still to do: the empty-cart state, and Iris needs to confirm the mobile layout.
-[00:01:05] Omar: Card form is built. Saved cards load in under a second.
-[00:01:20] Omar: Outstanding: error messages for declined cards, and the 3-D Secure redirect.
-[00:01:38] Lena: Let's keep Stripe as the only provider for launch. PayPal comes after.
-[00:01:50] Omar: Agreed.
-[00:02:02] Maya: Do we show taxes in the cart or only at payment? Nobody has decided.
-[00:02:10] Lena: That depends on finance. I'll ask Priya today, so it waits until then.
-[00:02:25] Omar: I can't make Saturday's regroup, I'm travelling.
-[00:02:31] Lena: Then I'll move it, and post the new time and the next tasks today.
-[00:02:40] Maya: Your arms need the rest anyway.
+export const NAMES = `Names: use the people named in the transcript, including people who are only mentioned (someone to ask, someone who will join). A speaker may be called by another name in conversation, for example a short name; when the transcript makes that clear (someone is greeted by that name and that speaker answers), write it once as "Short name (Discord name)" and then the short name. Never invent a name.`;
+
+const TONE = 'Tone: formal, neutral, short factual statements; no jokes, emoji or exclamation marks.';
+
+/**
+ * The word limit for the whole set of notes (title, topics and next steps together), from the meeting's length: 450 words up
+ * to 45 minutes (Granola's notes for a 36-minute meeting were about 430), then 150 more for each further half hour started,
+ * up to 900. Worked out here so the model does no arithmetic. Unknown length: 450.
+ */
+export function wordLimit(lengthSec) {
+  const min = Number(lengthSec) / 60;
+  if (!Number.isFinite(min) || min <= 45) return 450;
+  return Math.min(900, 450 + 150 * Math.ceil((min - 45) / 30));
+}
+
+export const finalFormat = (words = 450) => `Write plain text in exactly this format:
+
+First line: a short plain title (no bold) naming the meeting's main subject.
+
+Then 2 to 5 topic sections; never repeat a point in two sections. Topic bullets have NO timestamps. Each section starts with a short bold heading named after the topic, such as **Export settings**, or after a person for a status update, such as **Maya's demo (cart page)**. Under it, 1 to 6 short bullets. Use sub-bullets indented by two spaces for details. Write "Pending: ..." for a decision that waits on someone, and say who it waits on.
+
+Then this section, with exactly this bold heading:
+
+**Next steps**
+- Owner: task, with the detail and due date needed to act on it [hh:mm:ss]
+Each next step ends with ONE timestamp in the form [hh:mm:ss] (for example [00:34:18]; never a range, never [mm:ss]): the line where it was agreed. Include every task someone said they would do or was asked to do, including sending something and talking to someone outside the meeting; never turn a topic into a task nobody took on. At most 10 next steps. The owner is a person's name; use "Unassigned" if nobody took it. Add a due date only if one was said (turn "tomorrow" into a date). Write "None recorded" if there are none.
+
+No other sections. Keep the whole answer under ${words} words.`;
+export const FINAL_FORMAT = finalFormat(450);
+
+export const SUMMARY_EXAMPLE = `An example of good notes. It shows the level of detail and what to leave out. It is an illustration only: never copy its names, facts or dates.
+
+Meeting context: Date: Tuesday 8 March. Speakers: Lena, Omar Haddad, Maya.
+Transcript:
+[00:03:10] Lena: Next, export settings. I'd like 1080p for now.
+[00:03:18] Omar Haddad: Agreed. 2K and 4K can come later once encoding is stable.
+[00:03:30] Lena: And all encoding stays on the server with FFmpeg, not in the browser, so fonts look the same everywhere.
+[00:03:44] Omar Haddad: The preview is still open. Raj wants a browser preview.
+[00:03:52] Lena: I'll talk to Raj before Thursday.
+[00:04:05] Lena: Oz, the speed change, where are you?
+[00:04:08] Omar Haddad: Video goes from 0.25x to 3x, but audio breaks below 0.5x.
+[00:04:20] Lena: Then cap audio at 0.5x to 2x, and the audio length must still match the clip.
+[00:04:31] Omar Haddad: I can have that by tomorrow.
+[00:04:40] Maya: Did anyone watch the match last night?
+[00:04:44] Omar Haddad: Don't remind me, we lost three nil.
 Notes:
-Checkout redesign sprint check-in with Lena, Maya and Omar
+Export settings and speed changes
 
-**Sprint status**
-- Payment tasks have two days remaining [00:00:15]
-  - Afterwards, members can move to reporting or search [00:00:15]
+**Export settings**
+- Output is 1080p for now; 2K and 4K follow once encoding is stable
+- All encoding stays on the server with FFmpeg, not in the browser, so fonts render the same everywhere
+- Pending: a browser preview, which Raj wants; waits on Lena's talk with Raj
 
-**Maya's progress (cart page)**
-- Cart page complete: quantity buttons work and the coupon field validates codes [00:00:31]
-- Outstanding items:
-  - Empty-cart state [00:00:48]
-  - Mobile layout still to be confirmed by Iris [00:00:48]
+**Oz (Omar Haddad): speed per segment**
+- Video speed range 0.25x to 3x; audio breaks below 0.5x, so audio is capped at 0.5x to 2x
+- Audio length must still match the clip after a speed change
 
-**Omar's progress (card form)**
-- Card form built; saved cards load in under a second [00:01:05]
-- Outstanding items:
-  - Error messages for declined cards [00:01:20]
-  - 3-D Secure redirect [00:01:20]
+**Next steps**
+- Lena: discuss the browser preview with Raj before Thursday 10 March [00:03:52]
+- Oz: finish speed per segment with the audio cap and the length check by Wednesday 9 March [00:04:31]
+(Left out: the football chat [00:04:40].)
 
-**Scope and scheduling**
-- Tax display in the cart is undecided and waits on finance [00:02:10]
-- Omar is unavailable for Saturday's regroup, so it will be moved [00:02:25]
+The "(Left out: ...)" line explains the example. Do not write one in your notes.`;
 
-**Decisions**
-- Stripe is the only payment provider at launch; PayPal follows later [00:01:38]
+const withContext = (context) => (context ? `\n${context}` : '');
 
-**Action items**
-- Lena: ask Priya (finance) whether taxes are shown in the cart or only at payment [00:02:10]
-- Lena: move the Saturday regroup and post the new time and the next tasks today [00:02:31]
-- Maya: get Iris to confirm the mobile cart layout [00:00:48]
+/** One request for the whole meeting (the usual case on Cloudflare). */
+export const singleSystem = ({ glossary = '', context = '', words = 450 } = {}) =>
+  `You write meeting notes from an automatic transcript, like a careful assistant who was in the room.${withContext(context)}\n${LINE_FORMAT}${glossaryLine(glossary)}\n\n${PURPOSE}\n${SPECIFIC}\n${NAMES}\n${TONE}\n\n${finalFormat(words)}\n\n${SUMMARY_EXAMPLE}`;
 
-**Open questions**
-- Whether taxes are shown in the cart or only at payment (waits on finance) [00:02:02]
-(Left out: the climbing trip [00:00:04] and the remark about Omar's arms [00:02:40].)
+/** One part of a meeting that is too long for one request (detailed notes: the final step sees only these). */
+export const mapSystem = ({ glossary = '', context = '' } = {}) =>
+  `You are reading ONE PART of a longer meeting transcript. Another step will write the final notes from your notes alone, so anything you leave out is lost.${withContext(context)}\n${LINE_FORMAT}${glossaryLine(glossary)}\n\n${PURPOSE}\n${NAMES}
+Write DETAILED notes, grouped under short topic headings, plain bullets only (no tables). Keep every number, limit, tool name, file or branch name, date, reason, problem found, and the name of every person who must be asked, told, or given the remaining work. Each note ends with ONE [hh:mm:ss] (never a range).
+After the topic notes, a list headed exactly NEXT STEPS: "Owner: task (due date if said) [hh:mm:ss]", or "none". Only tasks someone said they would do or was asked to do.
+Use only this part. Never invent owners, deadlines, numbers or names.`;
 
-Example 2, a casual meeting. Transcript:
-[00:00:03] Ana: No agenda today, just the Friday catch-up.
-[00:00:10] Ben: I finally tried the ramen place on 5th. Worth it.
-[00:00:25] Ana: Are we still doing the team hike on the 14th?
-[00:00:31] Ben: Yes, I'll book the minibus.
-[00:00:40] Ana: As long as you don't get us lost again.
-Notes:
-Friday catch-up with Ana and Ben
+/** Notes from consecutive parts that are still too long together: shortened, keeping every next step. */
+export const mergeNotesSystem = ({ glossary = '', context = '' } = {}) =>
+  `You are given notes from consecutive parts of one meeting. Merge them into one shorter set of notes in the same form (topic headings, then NEXT STEPS) and merge duplicates. Do not drop any next step: keep its owner, due date and [hh:mm:ss] timestamp. Keep every number, name and date.${withContext(context)}${glossaryLine(glossary)}\n${PURPOSE}\nNever invent owners, deadlines, numbers or names.`;
 
-**Catch-up**
-- Informal team catch-up with no agenda [00:00:03]
-- Ben recommended a ramen restaurant on 5th [00:00:10]
-- The team hike on the 14th is still planned [00:00:25]
+/** The final notes from the parts' notes. */
+export const reduceSystem = ({ glossary = '', context = '', words = 450 } = {}) =>
+  `You are given detailed notes from consecutive parts of one meeting. Write the final meeting notes from them. Merge duplicates, but keep every specific detail and every next step with its [hh:mm:ss].${withContext(context)}${glossaryLine(glossary)}\n\n${PURPOSE}\n${SPECIFIC}\n${NAMES}\n${TONE}\n\n${finalFormat(words)}\n\n${SUMMARY_EXAMPLE}`;
 
-**Decisions**
-- None recorded
+/** Two drafts written independently from the same transcript, combined into one: evens out what a single run misses. */
+export const draftMergeSystem = ({ glossary = '', context = '', words = 450 } = {}) =>
+  `You are given two drafts of notes for the SAME meeting, written independently from the same transcript. Each draft may have missed points the other caught.${withContext(context)}${glossaryLine(glossary)}
 
-**Action items**
-- Ben: book the minibus for the team hike on the 14th [00:00:31]
-
-**Open questions**
-- None
-(Left out: the joke about getting lost [00:00:40].)
-
-The "(Left out: ...)" lines explain the examples. Do not write one in your notes.`;
-
-const FINAL_FORMAT = `Write plain text in exactly this format. EVERY bullet, sub-bullets included, ends with the [hh:mm:ss] of the transcript line it came from (a label bullet such as "Outstanding items:" needs none).
-
-First line: a short plain title (no bold): the meeting's main subject, then "with" and the speakers' names.
-
-Then 2 to 6 topic sections. Each starts with a short bold heading named after the topic, such as **Sprint status**, or after a person for a status update, such as **Maya's progress (cart page)**. Under it, short bullets: what was reported, built, concluded or is still outstanding, with the names, numbers and dates that were said. Put details, or "Outstanding items:", under a bullet as sub-bullets indented by two spaces.
-
-Then these three sections, with exactly these bold headings:
-
-**Decisions**
-- each decision that was actually made [hh:mm:ss], or "None recorded"
-
-**Action items**
-- Owner: task, with the detail needed to act on it [hh:mm:ss]
-- "None recorded" if there are none
-
-**Open questions**
-- questions raised but not answered, and decisions put off (say what they wait on) [hh:mm:ss], or "None"
-
-${ACTION_RULE}
-${GROUNDING}
-${RELEVANCE}
-Keep each bullet to one line and the whole answer under 550 words.`;
-
-export const singleSystem = ({ glossary = '' } = {}) =>
-  `You write meeting notes from an automatic transcript. ${LINE_FORMAT}${glossaryLine(glossary)}\n\n${FINAL_FORMAT}\n\n${SUMMARY_EXAMPLES}`;
-
-export const mapSystem = ({ glossary = '' } = {}) =>
-  `You are reading ONE PART of a longer meeting transcript. ${LINE_FORMAT}${glossaryLine(glossary)}
-Write terse bullet notes in exactly these four lists, in this order: TOPICS, DECISIONS, ACTION ITEMS, OPEN QUESTIONS ("none" under an empty list).
-Every item ends with the [hh:mm:ss] of the transcript line it came from. Under TOPICS, note who reported what, what is still outstanding, and who must ask whom.
-${ACTION_RULE}
-${GROUNDING} Use only this part.
-${RELEVANCE}`;
-
-export const reduceSystem = ({ glossary = '' } = {}) =>
-  `You are given notes from consecutive parts of one meeting. Combine them into the final meeting notes and merge duplicates. Do not drop any action item from the chunk notes: each must appear in the result with its [hh:mm:ss] timestamp.${glossaryLine(glossary)}\n\n${FINAL_FORMAT}\n\n${SUMMARY_EXAMPLES}`;
-
-export const mergeNotesSystem = ({ glossary = '' } = {}) =>
-  `You are given notes from consecutive parts of one meeting. Merge them into one shorter set of notes using the same four lists (TOPICS, DECISIONS, ACTION ITEMS, OPEN QUESTIONS) and merge duplicates. Do not drop any action item: keep its owner, due date and timestamp. Every item keeps its [hh:mm:ss] timestamp.${glossaryLine(glossary)}\n${ACTION_RULE}\n${GROUNDING}\n${RELEVANCE}`;
+Combine them into one set of notes: keep every specific point about the work that appears in EITHER draft (numbers, names, dates, who must ask whom), merge points that say the same thing into one bullet, and never add anything that is in neither draft. If the drafts disagree on a fact (a date, an owner), keep the version that is more specific; if you cannot tell, leave that detail out.
+Drop anything either draft included that belongs to this leave-out list: joining and audio trouble, greetings, small talk, hobbies and TV, job applications, resumes and career advice, personal favours between attendees, and anything someone asked to keep private.
+${SPECIFIC}\n${TONE}\n\n${finalFormat(words)}`;

@@ -9,7 +9,7 @@
 import { handleApi } from './api.js';
 import { handleGoogleCallback } from './calendar-oauth-http.js';
 import { GOOGLE_CALLBACK_PATH } from './google-oauth.js';
-import { MAX_QUESTION_CHARS, answerQuestion, buildMessages, cleanQuestion, joinContext, questionLimits, questionsEnabled, selectContext, takeQuestionSlot, usableQaProviders } from './ask.js';
+import { MAX_QUESTION_CHARS, answerQuestion, buildMessages, cleanQuestion, joinContext, questionLimits, qaUsesCloudflare, questionsEnabled, selectContext, takeQuestionSlot } from './ask.js';
 import { neuronsToday, softCaps } from './meter.js';
 import { secondsUntilMidnightUtc } from './neurons.js';
 import { embedIfDue, semanticHits } from './semantic.js';
@@ -130,7 +130,7 @@ async function handleQuestion(request, env, ctx, url, nowSec, t, enabled, view) 
 
   // The account-wide limit is the day's Cloudflare Neuron meter (the free allowance is shared with the summaries). Over the
   // Q&A cap, questions pause until the meter resets at 00:00 UTC. Checked before a question is counted against the link.
-  if (usableQaProviders(env).includes('cloudflare-llama') && (await neuronsToday(env.DB, nowSec)).total >= softCaps(env).qa) {
+  if (qaUsesCloudflare(env) && (await neuronsToday(env.DB, nowSec)).total >= softCaps(env).qa) {
     return page(view({ question: asked.question, error: MESSAGES.paused }), 429, { 'Retry-After': String(secondsUntilMidnightUtc(nowSec)) });
   }
 

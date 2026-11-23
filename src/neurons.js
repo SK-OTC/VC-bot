@@ -6,9 +6,18 @@
 
 export const LLAMA_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 export const LLAMA_LABEL = 'Llama 3.3 70B on Cloudflare Workers AI';
+// The summary models (pipeline/providers.mjs). Gemma 4 26B-A4B: 256,000-token context; gpt-oss-120b: 128,000.
+export const GEMMA_MODEL = '@cf/google/gemma-4-26b-a4b-it';
+export const GEMMA_LABEL = 'Gemma 4 26B-A4B on Cloudflare Workers AI';
+export const GPT_OSS_MODEL = '@cf/openai/gpt-oss-120b';
+export const GPT_OSS_LABEL = 'GPT-OSS 120B on Cloudflare Workers AI';
 
-/** Neurons per million tokens. */
-export const CHAT_RATES = { [LLAMA_MODEL]: { input: 26_668, output: 204_805 } };
+/** Neurons per million tokens (pricing page as of 2026-11-18). */
+export const CHAT_RATES = {
+  [LLAMA_MODEL]: { input: 26_668, output: 204_805 },
+  [GEMMA_MODEL]: { input: 9_091, output: 27_273 },
+  [GPT_OSS_MODEL]: { input: 31_818, output: 68_182 },
+};
 export const EMBEDDING_RATES = {
   '@cf/baai/bge-small-en-v1.5': 1841,
   '@cf/baai/bge-base-en-v1.5': 6058,

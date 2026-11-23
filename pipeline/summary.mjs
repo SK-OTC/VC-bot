@@ -1,20 +1,24 @@
-// Summary and action items from a finished transcript.
-// A long meeting is summarised in pieces (about 4,500 tokens each) and the notes are then combined, which keeps every
-// request small. The model is chosen by runSummaryChain: Cloudflare Llama 3.3 first, Groq gpt-oss as the fallback.
+// Meeting notes (summary + next steps) from a finished transcript.
+// The whole meeting goes to the model in one request when it fits (Gemma 4 and gpt-oss on Cloudflare take 256k and 128k
+// tokens, so in practice always). Only a model with a small limit (Groq's free tier) summarises in pieces and then combines
+// the notes; splitting loses detail and lets side chat through, so it is the last resort. A provider can ask for two drafts
+// that are then merged (drafts: 2), which evens out what a single run misses. The models are tried in order by runSummaryChain.
 import { groqRequest, EngineError } from './groq.mjs';
 import { chatLimiter } from './limiter.mjs';
-import { FALLBACK_SUFFIX, mapSystem, mergeNotesSystem, reduceSystem, singleSystem } from './prompts.mjs';
+import { fixWeekdayDates } from './dates.mjs';
+import { FALLBACK_SUFFIX, contextBlock, draftMergeSystem, wordLimit, mapSystem, mergeNotesSystem, reduceSystem, singleSystem } from './prompts.mjs';
 import { verifySummary } from './verify.mjs';
 import { estimateTokens as estimate } from '../src/neurons.js';
 
 // Conservative: real text averages about 4 characters per token, we assume 3.5 so we never go over.
 export const estimateTokens = estimate;
 
-// Explicit output limits (B3): a chunk's notes, and the final summary.
-export const CHUNK_OUTPUT_TOKENS = 700;
-export const FINAL_OUTPUT_TOKENS = 1200;
-// The prompt size a single request was budgeted with before the examples were added (see summarize).
-export const SINGLE_PROMPT_ALLOWANCE = 450;
+// Explicit output limits (B3): a part's notes, and the final notes. A reasoning model's thinking counts against these, so a
+// provider for such a model sets a larger finalTokens (pipeline/providers.mjs).
+export const CHUNK_OUTPUT_TOKENS = 1200;
+export const FINAL_OUTPUT_TOKENS = 1500;
+// Default size of one request (prompt + transcript, in estimated tokens) when the provider does not say: Groq's free tier.
+export const DEFAULT_SINGLE_MAX_TOKENS = 5450;
 
 /** Splits transcript text into pieces of at most maxTokens, always on line boundaries. */
 export function chunkText(text, maxTokens = 4500) {
@@ -84,48 +88,77 @@ export class ChatClient {
   }
 }
 
-/** Splits the final answer into the summary part and the action-item part (for storage). */
+/**
+ * Splits the final answer into the summary part and the next-steps part (stored as actions_text). The heading is "Next steps"
+ * (or "Action items" in notes written before 2026-11-23); the list ends at a blank line, the next bold heading or the end.
+ */
 export function splitSections(text) {
-  const m = /\*\*Action items\*\*\s*\n([\s\S]*?)(?=\n\*\*[A-Za-z ]+\*\*|\s*$)/i.exec(text);
+  const m = /\*\*(?:Next steps|Action items)\*\*[ \t]*\n([\s\S]*?)(?=\n[ \t]*\n|\n\*\*[^*\n]+\*\*|\s*$)/i.exec(text);
   return { summary: text.trim(), actions: m ? m[1].trim() : '' };
 }
 
 /**
  * transcriptBody: the transcript lines without the header. glossary: the team's correct spellings (every prompt lists them).
- * systemSuffix: extra text appended to every prompt (used for the Groq fallback).
- * Returns { ok: true, text, actions, requests } or { ok: false, reason }. Never throws for model problems:
+ * context: the meeting context block (prompts.mjs contextBlock). words: the notes' word limit (prompts.mjs wordLimit). systemSuffix: extra text appended to every prompt (Groq).
+ * singleMaxTokens: the largest single request (prompt + transcript, estimated tokens); a longer meeting is split.
+ * drafts: 2 writes two independent drafts and merges them (only for a single request). If the second draft or the merge
+ * fails, the first draft is used, so a hiccup costs detail, not the summary.
+ * Returns { ok: true, text, actions, requests, drafts } or { ok: false, reason }. Never throws for model problems:
  * a missing summary must not stop the transcript from being posted.
  */
-export async function summarize({ transcriptBody, chat, glossary = '', systemSuffix = '', log = () => {}, singleMaxTokens = 5000, chunkTokens = 4500 }) {
-  const sys = (build) => build({ glossary }) + systemSuffix;
+export async function summarize({
+  transcriptBody,
+  chat,
+  glossary = '',
+  context = '',
+  words = 450,
+  systemSuffix = '',
+  log = () => {},
+  singleMaxTokens = DEFAULT_SINGLE_MAX_TOKENS,
+  chunkTokens = 4500,
+  drafts = 1,
+  finalTokens = FINAL_OUTPUT_TOKENS,
+  chunkOutputTokens = CHUNK_OUTPUT_TOKENS,
+}) {
+  const sys = (build) => build({ glossary, context, words }) + systemSuffix;
   const ask = (system, user, maxTokens) => chat.complete(system, user, { maxTokens });
   try {
     if (!String(transcriptBody).trim()) return { ok: false, reason: 'the transcript is empty' };
     let text;
-    // One request when the WHOLE request (prompt + transcript) fits. The prompt grew with its few-shot examples (about 1,000
-    // tokens); counting it keeps a single request no larger than before (singleMaxTokens of transcript + a ~450-token prompt),
-    // which matters for Groq, whose per-minute token limit also caps a single request.
-    if (estimateTokens(transcriptBody) + estimateTokens(sys(singleSystem)) <= singleMaxTokens + SINGLE_PROMPT_ALLOWANCE) {
-      text = await ask(sys(singleSystem), transcriptBody, FINAL_OUTPUT_TOKENS);
+    let used = 1;
+    if (estimateTokens(transcriptBody) + estimateTokens(sys(singleSystem)) <= singleMaxTokens) {
+      text = await ask(sys(singleSystem), transcriptBody, finalTokens);
+      if (drafts >= 2) {
+        try {
+          log('summary: second draft');
+          const second = await ask(sys(singleSystem), transcriptBody, finalTokens);
+          log('summary: merging the two drafts');
+          const both = [text, second].map((d, i) => `DRAFT ${i + 1}:\n${stripExampleNotes(d)}`).join('\n\n=====\n\n');
+          text = await ask(sys(draftMergeSystem), both, finalTokens);
+          used = 2;
+        } catch (e) {
+          log(`summary: the second draft or the merge failed (${e.kind || 'error'}); using the first draft`);
+        }
+      }
     } else {
       const parts = chunkText(transcriptBody, chunkTokens);
       let notes = [];
       for (let i = 0; i < parts.length; i++) {
         log(`summary: notes for part ${i + 1}/${parts.length}`);
-        notes.push(await ask(sys(mapSystem), parts[i], CHUNK_OUTPUT_TOKENS));
+        notes.push(await ask(sys(mapSystem), parts[i], chunkOutputTokens));
       }
       // If the notes are still too long for one request, merge them in groups first.
-      while (estimateTokens(notes.join('\n\n')) > singleMaxTokens && notes.length > 1) {
+      while (estimateTokens(notes.join('\n\n')) + estimateTokens(sys(reduceSystem)) > singleMaxTokens && notes.length > 1) {
         const groups = chunkText(notes.join('\n\n---\n\n'), chunkTokens);
         if (groups.length >= notes.length) break; // cannot shrink further
         const merged = [];
-        for (const g of groups) merged.push(await ask(sys(mergeNotesSystem), g, CHUNK_OUTPUT_TOKENS));
+        for (const g of groups) merged.push(await ask(sys(mergeNotesSystem), g, chunkOutputTokens));
         notes = merged;
       }
       log('summary: combining notes');
-      text = await ask(sys(reduceSystem), notes.join('\n\n---\n\n'), FINAL_OUTPUT_TOKENS);
+      text = await ask(sys(reduceSystem), notes.join('\n\n---\n\n'), finalTokens);
     }
-    return { ok: true, text, actions: splitSections(text).actions, requests: chat.requests };
+    return { ok: true, text, actions: splitSections(text).actions, requests: chat.requests, drafts: used };
   } catch (e) {
     return { ok: false, reason: `${e.kind || 'error'}: ${e.message}`.slice(0, 200) };
   }
@@ -153,30 +186,39 @@ const sumUsage = (providers) =>
   );
 
 /**
- * Tries each provider in order until one writes the summary: [{ name, label, chat, systemSuffix? }].
+ * Tries each provider in order until one writes the summary: [{ name, label, chat, systemSuffix?, options? }], where options
+ * are summarize()'s per-model settings (singleMaxTokens, drafts, finalTokens, ...).
+ * meeting: { name, startedAt, lengthSec, speakers } for the prompt's context; startedAt also anchors the date check, which
+ * corrects a "weekday + date" pair that disagree (dates.mjs).
  * A provider that fails part-way (a 429, a 5xx, a timeout, an empty answer) is abandoned and the next one starts over
  * from the beginning. The finished summary is checked against the transcript (unmatched items are marked "(unverified)",
  * never deleted) and ends with a footer naming the model that wrote it.
  * Never throws. Logs counts and model names only, never transcript text.
  */
-export async function runSummaryChain({ transcriptBody, glossary = '', providers, log = () => {} }) {
+export async function runSummaryChain({ transcriptBody, glossary = '', meeting = {}, providers, log = () => {} }) {
   const attempts = [];
+  const context = contextBlock(meeting);
+  const words = wordLimit(meeting?.lengthSec);
   for (const p of providers) {
     log(`summary: trying ${p.name}`);
-    const r = await summarize({ transcriptBody, chat: p.chat, glossary, systemSuffix: p.systemSuffix ?? '', log });
+    const r = await summarize({ transcriptBody, chat: p.chat, glossary, context, words, systemSuffix: p.systemSuffix ?? '', log, ...(p.options ?? {}) });
     attempts.push({ provider: p.name, ok: r.ok, reason: r.ok ? undefined : r.reason });
     if (!r.ok) {
       log(`summary: ${p.name} failed (${r.reason})`);
       continue;
     }
-    const checked = verifySummary({ summaryText: stripExampleNotes(r.text), transcriptBody });
-    if (checked.flagged) log(`summary: ${checked.flagged} of ${checked.checked} decisions and action items could not be matched to the transcript (marked unverified)`);
+    const dated = fixWeekdayDates(stripExampleNotes(r.text), meeting?.startedAt);
+    if (dated.fixed) log(`summary: corrected ${dated.fixed} date(s) whose weekday and day did not match`);
+    const checked = verifySummary({ summaryText: dated.text, transcriptBody });
+    if (checked.flagged) log(`summary: ${checked.flagged} of ${checked.checked} next steps could not be matched to the transcript (marked unverified)`);
     const text = `${checked.text.trimEnd()}\n\nSummary written by ${p.label}.`;
     return {
       ok: true,
       text,
       actions: splitSections(text).actions,
       requests: r.requests,
+      drafts: r.drafts,
+      datesFixed: dated.fixed,
       provider: p.name,
       label: p.label,
       fellBack: attempts.length > 1,

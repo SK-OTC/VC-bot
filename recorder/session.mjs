@@ -89,11 +89,19 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
       }
     }
 
-    // 2. Summary and action items. Models are tried in order (Cloudflare Llama, then Groq).
+    // 2. Summary and next steps. Models are tried in order (Gemma 4, then gpt-oss on Cloudflare, then Groq; providers.mjs).
+    // The model is told the meeting's date (UTC), length, speakers and name, so it can turn "Friday" into a date and tell the
+    // meeting's purpose from side chat. The default team name "Team" says nothing, so it is left out.
     const chain = providers ?? (chat ? [{ name: chat.name ?? 'groq-gpt-oss', label: chat.label ?? 'the language model', chat }] : []);
     let summary = { ok: false, reason: 'no language model is configured', usage: { neurons: 0, promptTokens: 0, completionTokens: 0, requests: 0 } };
-    if (chain.length && body.trim()) summary = await runSummaryChain({ transcriptBody: body, glossary: cfg.team.glossary, providers: chain, log });
-    if (summary.ok) log(`summary: written by ${summary.provider}${summary.fellBack ? ' after a fallback' : ''}; ${summary.flagged} of ${summary.checked} items unverified`);
+    const meeting = {
+      name: cfg.team.name && cfg.team.name !== 'Team' ? cfg.team.name : '',
+      startedAt,
+      lengthSec,
+      speakers: [...new Set(lines.map((l) => names[l.speaker] ?? l.speaker).filter(Boolean))],
+    };
+    if (chain.length && body.trim()) summary = await runSummaryChain({ transcriptBody: body, glossary: cfg.team.glossary, meeting, providers: chain, log });
+    if (summary.ok) log(`summary: written by ${summary.provider}${summary.fellBack ? ' after a fallback' : ''}${summary.drafts > 1 ? ' (two drafts merged)' : ''}; ${summary.flagged} of ${summary.checked} items unverified`);
     if (!summary.ok && body.trim()) notes.push(`summary failed: ${summary.reason}`);
 
     // 3. Save for the private web page, questions and editing. The summary is delivered AFTER this, because the link to the

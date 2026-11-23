@@ -119,7 +119,7 @@ with what you hear when you play both speakers' files together.
 | `pipeline/engines.mjs`, `time-budget.mjs` | Which engines run (`ENGINE_ORDER`) and the transcription time budget |
 | `pipeline/glossary.mjs`, `glossary-fix.mjs`, `english-words.txt` | The glossary: the Whisper prompt, the post-correction, and the list of ordinary words it never changes |
 | `pipeline/cleanup.mjs`, `transcript.mjs` | Dropping invented text, merging speakers' lines, the transcript header |
-| `pipeline/summary.mjs`, `prompts.mjs`, `verify.mjs`, `cloudflare.mjs`, `providers.mjs`, `budget.mjs` | The summary: prompts, the Cloudflare Llama and Groq clients and their fallback order, the check against the transcript, the Neuron budget |
+| `pipeline/summary.mjs`, `prompts.mjs`, `dates.mjs`, `verify.mjs`, `cloudflare.mjs`, `providers.mjs`, `budget.mjs` | The summary: prompts, the Cloudflare (Gemma 4, gpt-oss-120b, Llama 3.3) and Groq clients and their fallback order, the date check, the check against the transcript, the Neuron budget |
 | `pipeline/upload.mjs`, `summary-message.mjs` | Sending the finished transcript to the Worker; the one Discord message that holds the summary and the link |
 | `scripts/transcribe.mjs` | Command line: a folder of `speaker-N-001.ogg` files in, a transcript (and optionally a summary) out |
 | `.github/workflows/record.yml` | The job the Worker starts (or you start by hand): installs Parakeet, caches its model, records, transcribes, posts |
@@ -169,7 +169,7 @@ This is the quality check: do it before relying on the recorder.
 1. Repo secrets: `DISCORD_TOKEN`, `GROQ_API_KEY`, `WORKER_URL` and `WORKER_SHARED_SECRET`. The last two are how the
    job fetches the channel settings made with `/recording`, polls the stop flag and stores the transcript.
    (`TEAM_CONFIG` is optional: see below.) Optional but recommended: `CLOUDFLARE_ACCOUNT_ID` and
-   `CLOUDFLARE_API_TOKEN` (a token with **Workers AI** permission only), so the summary is written by Llama 3.3 on
+   `CLOUDFLARE_API_TOKEN` (a token with **Workers AI** permission only), so the summary is written by Gemma 4 on
    Cloudflare. Without them the job logs that Cloudflare is skipped and Groq writes the summary.
    Optional repository **variables** (Settings > Secrets and variables > Actions > Variables; they are public in a public
    repo, so put only names and numbers there): `ENGINE_ORDER`, `PARAKEET_BUDGET_MIN`, `SUMMARY_MODEL_ORDER`.
@@ -208,7 +208,7 @@ It refuses to record if it can neither rename itself nor post the notice.
 | `ENGINE_ORDER` | `parakeet,groq` | Transcription engines, main first (`groq,parakeet` flips them). A repository *variable*: public, so names only |
 | `PARAKEET_BUDGET_MIN` | 120 | Minutes transcription may take before the rest goes to the fallback (5 to 300). Also a repository variable |
 | `PARAKEET_PYTHON`, `PARAKEET_MODEL_DIR`, `PARAKEET_THREADS` | set by the workflow | Python with `onnx-asr`, where the model is cached, ONNX threads (default: all vCPUs) |
-| `SUMMARY_MODEL_ORDER` | `cloudflare-llama,groq-gpt-oss` | Which models write the summary, first choice first. A repository variable |
+| `SUMMARY_MODEL_ORDER` | `cloudflare-gemma,cloudflare-gpt-oss,groq-gpt-oss` | Which models write the summary, first choice first. A repository variable |
 | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | unset | Secrets for the Cloudflare summary model (the id is 32 hex characters; the token needs Workers AI only) |
 | `READY_TIMEOUT_SEC` | 30 | How long to wait for the voice connection to be ready (5 to 120) |
 | `SESSION_ID` | set by the Worker | Which `/start-recording` session this run belongs to (4 to 40 letters, digits, `-`, `_`) |
@@ -308,7 +308,7 @@ different licence for its hosted service; the Hugging Face model card governs th
   path, the weekly keep-alive, `/calendar` and its Disconnect button, and that no token, code or secret reaches a log.
 * **Scheduled auto-join:** `test/auto-record.test.js` (which links start a recording and which do nothing, the checks, not
   starting twice) and `test/voice-link.test.js` (what counts as a link).
-* **Prompts:** `test/prompts.test.js` pins every behaviour the shortened summary prompts must still ask for, including the relevance and tone rule (meeting content first; small talk and jokes left out unless the meeting itself is casual; formal, serious tone) and the notes format modelled on the owner's example notes: a title line, sections by topic or by person (with "Outstanding items"), then the fixed **Decisions**, **Action items** and **Open questions** sections the verifier checks. Two invented few-shot examples (a work meeting and a casual one) show it (about 1,000 extra tokens per final request; a meeting is summarised in one request only while prompt + transcript stay as large as a single request was before).
+* **Prompts:** `test/prompts.test.js` pins every rule the summary prompts must ask for (each one made a visible difference when tested on two real meetings on 2026-11-23): the meeting context and the calendar of dates to copy from; specific bullets, never one that only names a topic; the leave-out list (side chat, resumes, anything private); naming people who are only mentioned; the format (a title line, topic sections without timestamps, then one **Next steps** list with exactly one `[hh:mm:ss]` per item); the word limit that grows with the meeting; and the one example (invented names). `test/dates.test.js` covers the date check, and `test/summary-chain.test.js` the two drafts and their merge.
 * **Python:** `pipeline/test_parakeet_worker.py` (8 tests of the window splitting and the worker protocol). `npm test` does not
   run it; `record.yml` does, before each recording.
 
@@ -329,7 +329,8 @@ The tests prove logic only. They do **not** prove:
   has **not been run on GitHub**. The log of the first run is public in a public repo: check it contains no names or transcript text.
 * Cloudflare behaviour the tests only imitate: the Vectorize namespace upsert and query, the exact result shapes the Workers AI
   binding returns, whether the Neuron meter agrees with the Cloudflare dashboard (it is an estimate: compare them over a
-  full day), and Llama's summary quality.
+  full day). The summary models were compared on two real meetings only (2026-11-23); the new chain (two Gemma drafts,
+  merge, date check) has not yet run inside a real recording job.
 * Discord and GitHub calls made by the Worker: dispatching the workflow, and `GET /guilds/{id}/voice-states/{user}` (used by
   `/start-recording` to find your voice channel).
 * Discord behaviour the tests only imitate: the private message to the person who started the recording (`discord.js`
@@ -679,13 +680,19 @@ How it is protected:
 * **Not logged.** Neither the Worker nor the recorder ever prints a link. The recorder sends it only in the summary message
   (to the channel, or privately when posting is off).
 
-### Asking questions about a meeting (Llama 3.3 on Cloudflare, Groq as the fallback)
+### Asking questions about a meeting (Gemma 4 on Cloudflare, Groq as the fallback)
 
 A reader types a question; the Worker finds the relevant parts of **that one meeting's** stored transcript, adds the meeting's summary (the edited one,
 if someone edited it), and asks
-**Llama 3.3 70B on Workers AI** (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, through the `AI` binding, no key needed) to
-answer from them only. If Cloudflare errors (429, 5xx, timeout), **Groq gpt-oss-120b** answers instead (needs the
-`GROQ_API_KEY` secret on the Worker; `QA_MODEL_ORDER` changes the order). Excerpts are capped at 6,000 tokens
+**Gemma 4 26B-A4B on Workers AI** (`@cf/google/gemma-4-26b-a4b-it`, thinking off, through the `AI` binding, no key
+needed) to answer from them only, citing the timestamp of each line it used. If Cloudflare errors (429, 5xx, timeout),
+**Groq gpt-oss-120b** answers instead (needs the `GROQ_API_KEY` secret on the Worker). `QA_MODEL_ORDER` changes the
+order; `cloudflare-llama,groq-gpt-oss` uses Llama 3.3 70B instead, the model used before 2026-11-23. Why Gemma: six
+questions on two real meetings (two of them with no answer in the transcript) were answered correctly by both; Gemma took
+2.4 s and about 80 Neurons per answer, Llama 4.8 s and about 216, so about 2.7 times as many questions fit in the daily
+Q&A cap. Llama was slightly more careful (once Gemma stated as fact what was only possible), which matches Vectara's
+hallucination leaderboard (Llama 3.3 4.1%, Gemma 4 5.2%); the prompt now asks the model to say when something is only
+possible. Excerpts are capped at 6,000 tokens
 (about 21,000 characters) and answers at 500 tokens. Short meetings are sent whole. Long ones use **hybrid
 retrieval**: keyword search (SQLite full-text, BM25) and meaning-based search (embeddings in Cloudflare Vectorize) each
 rank the transcript's chunks, the two rankings are merged with Reciprocal Rank Fusion, and the top matches are sent with
@@ -743,28 +750,52 @@ Protections around a question:
 * **Privacy:** the question, the summary and the parts of the transcript used for an answer go to Cloudflare Workers AI
   (or Groq when it is the fallback). See "Data terms" below.
 
-### Summaries (Llama 3.3 on Cloudflare, Groq as the fallback) and the Neuron budget
+### Summaries (Gemma 4 on Cloudflare, then gpt-oss-120b, then Groq) and the Neuron budget
 
-After a meeting the recorder writes the summary with **Llama 3.3 70B on Cloudflare's REST API** (the OpenAI-compatible
-`/ai/v1/chat/completions` path, confirmed with a real call: it returns token usage and Cloudflare's own `neurons` figure).
-If Cloudflare returns 429/5xx, times out (60 s per call), the token is rejected, or the budget below is used up, the same
-prompts run on **Groq gpt-oss-120b** (reasoning effort low, plus "Do not add information that is not in the transcript.").
-If both fail, the transcript is posted with a "summary unavailable" note. The summary ends with a line naming
-the model that wrote it.
+After a meeting the recorder writes the notes on **Cloudflare's REST API** (the OpenAI-compatible
+`/ai/v1/chat/completions` path; it returns token usage and Cloudflare's own `neurons` figure). The models, tried in order:
 
-* **Prompts for a cautious model.** Each chunk (4,500 tokens, notes limited to 700 tokens) returns four lists (topics,
-  decisions, action items, open questions), every item with its `[hh:mm:ss]`; the final summary is limited to 1,200
-  tokens. Use only the transcript; never invent owners, deadlines or numbers; an action item is `Owner: task [hh:mm:ss]`
-  with the owner exactly as in the transcript or `Unassigned`; the merge step must not drop any action item. Every prompt
-  lists the team's glossary spellings. The four prompts are in `pipeline/prompts.mjs`, and `test/prompts.test.js` pins every behaviour they
-  must ask for. Their summary quality on real transcripts has not been measured.
-* **Check against the transcript, no extra model call.** For each decision and action item: are there transcript lines
-  within 30 seconds of its timestamp, and do at least two non-trivial words from the item appear in lines within 60
-  seconds? If not, the item is **kept** and ends with `(unverified)`. Nothing is ever deleted; the job log shows only the
-  count.
+| Name in `SUMMARY_MODEL_ORDER` | Model | How it is used | Neurons for a 35-minute meeting |
+|---|---|---|---|
+| `cloudflare-gemma` (first) | Gemma 4 26B-A4B (`@cf/google/gemma-4-26b-a4b-it`), thinking off | the whole meeting in one request, **twice**, then the two drafts merged | about 225 |
+| `cloudflare-gpt-oss` | gpt-oss-120b (`@cf/openai/gpt-oss-120b`) | the whole meeting in one request | about 400 |
+| `groq-gpt-oss` (last) | gpt-oss-120b on Groq, reasoning effort low | one request up to about 15 minutes, otherwise in parts (Groq's free tier allows 8,000 tokens a minute) | none |
+| `cloudflare-llama` (only if named) | Llama 3.3 70B, the old default | one request up to about 20,000 tokens | about 280 |
+
+If a model returns 429/5xx, times out (60 s per call), its token is rejected, or the budget below is used up, the next one
+starts over. If all fail, the transcript is posted with a "summary unavailable" note. The notes end with a line naming the
+model that wrote them.
+
+Why this order: on 2026-11-23 the four Cloudflare models were run on two real meetings and compared with Granola's notes
+for the same meetings. Gemma 4 gave the most specific notes and left out side chat, at about 100 Neurons a request, but two
+runs on the same meeting differed a lot (one missed whole topics), so two drafts are written and merged (the merge costs
+about 33 Neurons). gpt-oss-120b is detailed but let side chat into the notes more often, at about four times the cost.
+Llama 3.3 with the same prompts stayed vague. Temperature 0 did not make Gemma's runs repeat.
+
+* **The format.** A plain title line, 2 to 5 topic sections (no timestamps on topic bullets, "Pending: ..." for a decision
+  that waits on someone), then one **Next steps** list: `Owner: task, with the detail and due date [hh:mm:ss]`. The word
+  limit is for the whole notes and grows with the meeting: 450 words up to 45 minutes, 150 more per further half hour, at
+  most 900. Notes written before 2026-11-23 have Decisions / Action items / Open questions instead; both are still read.
+* **What the prompts ask for** (`pipeline/prompts.mjs`; `test/prompts.test.js` pins each rule): the meeting context (UTC
+  date, a list of the next seven days' dates to copy from, length, speakers, setup name); specific bullets, never one that
+  only names a topic; a leave-out list (joining trouble, small talk, hobbies, job applications and resumes, personal
+  favours, anything someone asked to keep private), because the notes are shared; people who are only mentioned are named,
+  and a nickname is matched to its speaker when the transcript makes it clear; nothing invented; the team's glossary
+  spellings. The one example uses invented names.
+* **Dates are checked in code.** A model still wrote "Friday 28 November" for Friday the 27th. After the notes are written,
+  every "weekday + date" whose weekday and date disagree is corrected to the nearest date with that weekday
+  (`pipeline/dates.mjs`); the job log shows only the count. Dates are UTC days: the recorder does not know the team's time zone.
+* **Check against the transcript, no extra model call.** For each next step: was something being said within 30 seconds
+  of its timestamp (a line lasts until the next one starts, or as long as its words take to say), and do at least two of
+  the item's words appear in what was said within 60 seconds, at least one of them specific (a date or a word like
+  "complete" or "review" alone is not enough)? Word forms match ("tests"/"testing"), and short names and acronyms count
+  ("Tim", "PR", "FPS"). If not, the item is **kept** and ends with `(unverified)`. `[mm:ss]` and ranges are read too.
+  Nothing is ever deleted; the job log shows only the count. On the 2026-11-23 test outputs this cut the marks from 26
+  to 6, most of the 20 removed being correct items reworded; it checks that an item was talked about, not that its owner
+  or date is right.
 * **Limiter.** `cfLimiter` allows 20 requests a minute; 429 and 5xx are retried with backoff (up to 3 tries) before the
   fallback.
-* **Model order** is the repository *variable* `SUMMARY_MODEL_ORDER` (default `cloudflare-llama,groq-gpt-oss`).
+* **Model order** is the repository *variable* `SUMMARY_MODEL_ORDER` (default `cloudflare-gemma,cloudflare-gpt-oss,groq-gpt-oss`).
   Variables are public in a public repo, so it holds only model names.
 
 Cloudflare's free allowance is **10,000 Neurons a day for the whole account, shared** by summaries, answers and
@@ -776,10 +807,10 @@ embeddings, reset at 00:00 UTC. The Worker keeps a daily meter in D1:
 | Q&A answer (Worker) | the `neurons` figure in the response, or the published rates if absent | `QA_SOFT_CAP` = 7,000 |
 | Embeddings (Worker) | **an estimate**: tokens x 6,058 per million (`bge-base-en-v1.5`). The Workers AI binding does not report usage for embeddings | counted in the total, never blocked by itself |
 
-Published rates (Cloudflare pricing page): Llama 3.3 70B costs 26,668 Neurons per million input tokens and 204,805 per
-million output tokens. For a probe of 42 input + 2 output tokens these give 1.529666 and Cloudflare reported 1.529653
-(agreeing to four decimal places). The model's context window is **24,000 tokens** for prompt and answer together
-(Cloudflare's model page), so the 4,500-token chunks and 6,000-token excerpts fit comfortably. Whether the meter matches
+Published rates (Cloudflare pricing page, 2026-11-18), Neurons per million input / output tokens: Gemma 4 26B-A4B 9,091 /
+27,273; gpt-oss-120b 31,818 / 68,182; Llama 3.3 70B 26,668 / 204,805. Each agrees with the figure Cloudflare reported on
+a real call (Gemma: 92.5 for 8,385 + 596 tokens; Llama: 1.529653 for 42 + 2). Context windows: Gemma 4 256,000 tokens,
+gpt-oss-120b 128,000, Llama 3.3 24,000. Q&A answers send at most 6,000-token excerpts. Whether the meter matches
 the Cloudflare dashboard within 20% over a full day has **not** been measured yet: compare the two after a day of real use.
 
 **Secrets and settings.** Never paste a token into chat or a file in the repo.
@@ -788,7 +819,7 @@ the Cloudflare dashboard within 20% over a full day has **not** been measured ye
 |---|---|---|
 | `CLOUDFLARE_ACCOUNT_ID` | GitHub Actions secret | Cloudflare account for the summary (32 hex characters) |
 | `CLOUDFLARE_API_TOKEN` | GitHub Actions secret | a token limited to **Workers AI** only |
-| `SUMMARY_MODEL_ORDER` | GitHub repository variable | optional; default `cloudflare-llama,groq-gpt-oss` |
+| `SUMMARY_MODEL_ORDER` | GitHub repository variable | optional; default `cloudflare-gemma,cloudflare-gpt-oss,groq-gpt-oss` |
 | `QA_SOFT_CAP`, `SUMMARY_SOFT_CAP`, `QA_MODEL_ORDER` | `wrangler.toml` settings | Neuron caps and Q&A model order |
 | `AI` binding | `wrangler.toml` | Workers AI for Q&A and embeddings (no key) |
 

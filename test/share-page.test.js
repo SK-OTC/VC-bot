@@ -56,6 +56,11 @@ test('page: action items are added from actions_text only when the summary has n
   assert.match(without, /Action items<\/h2><ul><li class="d0">Sam: do it/);
   const nothing = transcriptPage({ ...base, summary_text: null, actions_text: null });
   assert.match(nothing, /No summary is available for this meeting\./);
+  // notes written since 2026-11-23 call the list "Next steps": it is not repeated as "Action items"
+  const next = transcriptPage({ ...base, summary_text: 'Title\n\n**Topic**\n- a point\n\n**Next steps**\n- Sam: do it [00:00:09]', actions_text: '- Sam: do it [00:00:09]' });
+  assert.equal((next.match(/Sam: do it/g) ?? []).length, 1);
+  assert.match(next, /Next steps<\/h2>/);
+  assert.ok(!next.includes('Action items</h2>'));
 });
 
 test('page: it is dark, has the top bar without any sign-in, and uses no outside name, logo or font', () => {

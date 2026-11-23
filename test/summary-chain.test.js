@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { CloudflareChatClient } from '../pipeline/cloudflare.mjs';
 import { EngineError } from '../pipeline/groq.mjs';
 import { RateLimiter, cfLimiter } from '../pipeline/limiter.mjs';
-import { FALLBACK_SUFFIX, glossaryLine, mapSystem, mergeNotesSystem, reduceSystem, singleSystem } from '../pipeline/prompts.mjs';
+import { FALLBACK_SUFFIX, draftMergeSystem, mapSystem, mergeNotesSystem, reduceSystem, singleSystem } from '../pipeline/prompts.mjs';
 import { verifySummary, itemWords, parseTranscriptLines, UNVERIFIED } from '../pipeline/verify.mjs';
-import { CHUNK_OUTPUT_TOKENS, FINAL_OUTPUT_TOKENS, chunkText, estimateTokens, runSummaryChain, summarize } from '../pipeline/summary.mjs';
-import { buildSummaryProviders, parseOrder } from '../pipeline/providers.mjs';
+import { CHUNK_OUTPUT_TOKENS, DEFAULT_SINGLE_MAX_TOKENS, FINAL_OUTPUT_TOKENS, chunkText, estimateTokens, runSummaryChain, summarize } from '../pipeline/summary.mjs';
+import { CLOUDFLARE_MODELS, buildSummaryProviders, parseOrder } from '../pipeline/providers.mjs';
 import { fetchSummaryBudget } from '../pipeline/budget.mjs';
-import { LLAMA_LABEL, LLAMA_MODEL, chatNeurons, embeddingNeurons, secondsUntilMidnightUtc, utcDay } from '../src/neurons.js';
+import { GEMMA_LABEL, GEMMA_MODEL, GPT_OSS_LABEL, GPT_OSS_MODEL, LLAMA_LABEL, LLAMA_MODEL, chatNeurons, embeddingNeurons, secondsUntilMidnightUtc, utcDay } from '../src/neurons.js';
 
 const ACCOUNT = 'a'.repeat(32);
 const TOKEN = 'cf-token-that-must-never-appear-anywhere';
@@ -69,6 +69,23 @@ test('cloudflare client: sends the right request to the OpenAI-compatible path a
   await client.complete('S', 'U'); // default output limit
   assert.equal(calls[1].body.max_tokens, 1200);
   assert.equal(client.usage.neurons, 3.0594);
+});
+
+test('cloudflare client: a named model, extra request fields and temperature; an answer cut off while thinking says so', async () => {
+  const { client, calls } = makeClient(() => okBody('ok'), { model: GEMMA_MODEL, name: 'cloudflare-gemma', label: GEMMA_LABEL, extraBody: { chat_template_kwargs: { enable_thinking: false } }, temperature: 0 });
+  await client.complete('S', 'U', { maxTokens: 2000 });
+  assert.equal(calls[0].body.model, GEMMA_MODEL);
+  assert.deepEqual(calls[0].body.chat_template_kwargs, { enable_thinking: false });
+  assert.equal(calls[0].body.temperature, 0);
+  assert.equal(calls[0].body.max_tokens, 2000);
+  assert.equal(client.name, 'cloudflare-gemma');
+  assert.equal(client.label, GEMMA_LABEL);
+  const cut = makeClient(() => new Response(JSON.stringify({ choices: [{ message: { content: '', reasoning_content: 'thinking...' }, finish_reason: 'length' }], usage: { prompt_tokens: 10, completion_tokens: 3000, neurons: 82 } }), { status: 200 }));
+  await assert.rejects(cut.client.complete('S', 'U'), (e) => e.kind === 'bad_request' && /whole output limit without an answer/.test(e.message));
+  assert.equal(cut.client.usage.neurons, 82, 'the Neurons are counted even though there was no answer');
+  // the rates for the new models, for when Cloudflare does not report Neurons (checked against real responses on 2026-11-23)
+  assert.ok(Math.abs(chatNeurons(GEMMA_MODEL, { prompt_tokens: 8385, completion_tokens: 596 }) - 92.5) < 0.5, 'Cloudflare reported 92.5');
+  assert.ok(Math.abs(chatNeurons(GPT_OSS_MODEL, { prompt_tokens: 7592, completion_tokens: 2027 }) - 379.77) < 0.5, 'Cloudflare reported 379.77');
 });
 
 test('cloudflare client: when usage has no Neuron figure it is worked out from the tokens', async () => {
@@ -150,41 +167,37 @@ test('cfLimiter: 20 requests a minute, the 21st waits for the window to move on'
 
 // ---------- prompts ----------
 
-test('prompts: every prompt lists the glossary spellings; the rules for cautious models are in place', () => {
+test('prompts: every prompt lists the glossary spellings and forbids invention; the final ones ask for one Next steps list', () => {
   const g = 'LiteCut, CapCut=Cap Cut, Zoe';
-  for (const build of [singleSystem, mapSystem, reduceSystem, mergeNotesSystem]) {
+  for (const build of [singleSystem, mapSystem, reduceSystem, mergeNotesSystem, draftMergeSystem]) {
     const p = build({ glossary: g });
     assert.match(p, /always spell them exactly like this\): LiteCut, CapCut, Zoe\./); // the "=mishearing" part is not shown
-    assert.match(p, /Never invent owners, deadlines, numbers or names/);
-    assert.match(p, /Unassigned/);
+    assert.match(p, /never invent owners, deadlines, numbers or names/i);
     assert.match(p, /\[hh:mm:ss\]/);
     assert.doesNotMatch(p, /Cap Cut/);
   }
-  assert.match(reduceSystem(), /Do not drop any action item from the chunk notes/);
-  assert.match(mergeNotesSystem(), /Do not drop any action item/);
-  assert.match(mapSystem(), /TOPICS, DECISIONS, ACTION ITEMS, OPEN QUESTIONS/);
-  assert.match(singleSystem(), /Owner: task \[hh:mm:ss\]/);
-  assert.match(singleSystem(), /speaker's name exactly as it appears in the transcript/);
-  assert.match(singleSystem(), /topic sections[\s\S]*\*\*Decisions\*\*[\s\S]*\*\*Action items\*\*[\s\S]*\*\*Open questions\*\*/);
-  assert.equal(glossaryLine(''), '');
-  assert.equal(glossaryLine(undefined), '');
+  for (const build of [singleSystem, reduceSystem, draftMergeSystem]) {
+    assert.match(build(), /\*\*Next steps\*\*\n- Owner: task/);
+    assert.match(build(), /"Unassigned"/);
+  }
+  assert.match(mapSystem(), /NEXT STEPS/);
   assert.match(FALLBACK_SUFFIX, /Do not add information that is not in the transcript\./);
 });
 
-test('one request only when the whole request fits: the larger prompt does not make a single request bigger than before', async () => {
-  const { SINGLE_PROMPT_ALLOWANCE } = await import('../pipeline/summary.mjs');
+test('one request when the whole request (prompt + transcript) fits the provider\'s limit; otherwise it is split', async () => {
   const calls = [];
-  const chat = { requests: 0, async complete(system) { calls.push(system); this.requests++; return '**Decisions**\n- None recorded'; } };
+  const chat = { requests: 0, async complete(system) { calls.push(system); this.requests++; return '**Next steps**\n- None recorded'; } };
   const lineOf = (i) => `[00:${String(Math.floor(i / 60) % 60).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}] Sam: we talked about the shoe launch plan and the budget for it`;
   const body = (tokens) => { const out = []; for (let i = 0; estimateTokens(out.join('\n')) < tokens; i++) out.push(lineOf(i)); return out.join('\n'); };
   const promptTokens = estimateTokens(singleSystem());
-  assert.ok(promptTokens > SINGLE_PROMPT_ALLOWANCE, 'the prompt is bigger than it used to be');
-  await summarize({ transcriptBody: body(3000), chat });
-  assert.equal(calls.length, 1, 'a short meeting is still one request');
+  await summarize({ transcriptBody: body(2000), chat });
+  assert.equal(calls.length, 1, 'a short meeting is one request at the default (Groq-sized) limit');
   calls.length = 0;
-  await summarize({ transcriptBody: body(4800), chat });
-  assert.ok(calls.length >= 2, 'near the old limit it is split, because prompt + transcript would be larger than before');
-  assert.ok(estimateTokens(body(3000)) + promptTokens <= 5000 + SINGLE_PROMPT_ALLOWANCE);
+  await summarize({ transcriptBody: body(DEFAULT_SINGLE_MAX_TOKENS - promptTokens + 50), chat });
+  assert.ok(calls.length >= 2, 'just over the default limit it is split');
+  calls.length = 0;
+  await summarize({ transcriptBody: body(30_000), chat, singleMaxTokens: 200_000 });
+  assert.equal(calls.length, 1, 'a long meeting is still one request when the model takes it (Gemma 4: 256k context)');
 });
 
 // ---------- the timestamp check (B5) ----------
@@ -231,18 +244,56 @@ test('verify: items that match the transcript pass; invented or untimed ones are
   assert.equal(lines.length, SUMMARY.split('\n').length, 'nothing is ever deleted');
 });
 
-test('verify: the two checks are 30 seconds for lines near the timestamp and 60 seconds for the words', () => {
+test('verify: the two checks are 30 seconds for lines near the timestamp and 60 seconds for the words, from the end of a line', () => {
+  // a 6-word line lasts 5 seconds (the minimum), so 00:10:00 covers until 00:10:05
   const body = ['[00:10:00] A: the quarterly budget forecast needs revision', '[00:12:00] B: nothing relevant here at all'].join('\n');
   const item = (ts) => `**Action items**\n- A: revise the quarterly budget forecast [${ts}]`;
   const flagged = (ts) => verifySummary({ summaryText: item(ts), transcriptBody: body }).flagged;
   assert.equal(flagged('00:10:00'), 0);
-  assert.equal(flagged('00:10:30'), 0); // 30 s away: a line exists near it, and the words are within 60 s
-  assert.equal(flagged('00:10:31'), 1); // 31 s from the nearest line: check 1 fails
+  assert.equal(flagged('00:10:35'), 0); // 30 s after the line ends: a line exists near it, and the words are within 60 s
+  assert.equal(flagged('00:10:36'), 1); // 31 s after the line ends: check 1 fails
   assert.equal(flagged('00:11:00'), 1); // no line within 30 s
+  // a long explanation covers the time it takes to say (2.5 words a second), up to the next line
+  const long = `[00:24:06] Farah: ${'we talk about many pre-processing things here '.repeat(30).trim()} and Saad's team may be handling the probe check`;
+  const longBody = [long, '[00:26:00] B: ok'].join('\n');
+  assert.equal(verifySummary({ summaryText: '**Next steps**\n- Farah: ask Saad whether his team is handling the probe [00:25:30]', transcriptBody: longBody }).flagged, 0, '84 s into a ~2-minute line');
+  const words = long.split(': ').slice(1).join(': ').split(/\s+/).length; // 219 words, about 88 s
+  assert.equal(parseTranscriptLines(longBody)[0].end, 24 * 60 + 6 + Math.min(114, words / 2.5), 'the line ends when its words are said');
+  assert.equal(parseTranscriptLines('[00:00:01] A: hi\n[00:00:03] B: yes')[0].end, 3, 'never past the next line');
   const wide = ['[00:10:00] A: the quarterly budget forecast needs revision', '[00:10:50] B: ok'].join('\n');
   assert.equal(verifySummary({ summaryText: item('00:10:50'), transcriptBody: wide }).flagged, 0); // the line is 50 s away: inside 60 s
   const far = ['[00:09:00] A: the quarterly budget forecast needs revision', '[00:10:50] B: ok'].join('\n');
   assert.equal(verifySummary({ summaryText: item('00:10:50'), transcriptBody: far }).flagged, 1); // words 110 s away: outside 60 s
+});
+
+test('verify: "Next steps" is checked; [mm:ss], ranges, "**Heading**:" and "## Heading" are read; "Owner: none recorded" is skipped', () => {
+  const body = ['[00:24:06] Farah: I will talk to Saad about the probe today', '[00:34:18] Farah: I will check your PR today'].join('\n');
+  const notes = [
+    'Title',
+    '',
+    '**Topic**',
+    '- Saad owns the probe, says nothing checkable here',
+    '',
+    '**Next steps**',
+    '- Farah: talk to Saad about the probe [00:24:06]',
+    '- Farah: check the PR today [00:24:06‑00:24:30]', // a range, with the non-breaking hyphen Groq's model wrote
+    '- Farah: check the PR today [34:18]', // [mm:ss]
+    '- Farah: book the venue in Lisbon [00:34:18]',
+    '- Unassigned: none recorded',
+  ].join('\n');
+  const r = verifySummary({ summaryText: notes, transcriptBody: body });
+  const lines = r.text.split('\n');
+  assert.equal(r.checked, 4, 'only the next steps are checked; the "none" line is skipped');
+  assert.equal(r.flagged, 2);
+  assert.ok(!lines[6].includes(UNVERIFIED));
+  assert.ok(lines[7].endsWith(UNVERIFIED), 'the range starts at 00:24:06, where the PR is not mentioned');
+  assert.ok(!lines[8].includes(UNVERIFIED), '[34:18] is read as 00:34:18');
+  assert.ok(lines[9].endsWith(UNVERIFIED), 'invented');
+  assert.ok(!lines[3].includes(UNVERIFIED), 'topic bullets are not checked');
+  for (const heading of ['**Next steps**:', '## Next steps']) {
+    assert.equal(verifySummary({ summaryText: `${heading}\n- Farah: book the venue in Lisbon [00:34:18]`, transcriptBody: body }).flagged, 1, heading);
+  }
+  assert.deepEqual(itemWords('- Farah: check the PR today [00:24:06-00:24:30]'), ['check', 'pr', 'today'], 'a range is not read as words; "PR" is');
 });
 
 test('verify: needs two of the item\'s words (stems match: sending/send); never doubles the marker; handles odd input', () => {
@@ -268,29 +319,34 @@ function recorder(reply = GOOD) {
   return { calls, requests: 0, usage: { requests: 0, promptTokens: 0, completionTokens: 0, neurons: 0 }, async complete(system, user, opts) { calls.push({ system, user, maxTokens: opts?.maxTokens }); this.requests++; return typeof reply === 'function' ? reply(calls.length) : reply; } };
 }
 
-test('summarize: a short meeting uses one request limited to 1,200 output tokens, with the glossary in the prompt', async () => {
+test('summarize: a short meeting is one request limited to 1,500 output tokens by default, with the glossary and context', async () => {
   const chat = recorder();
-  const r = await summarize({ transcriptBody: TRANSCRIPT, chat, glossary: 'LiteCut' });
+  const r = await summarize({ transcriptBody: TRANSCRIPT, chat, glossary: 'LiteCut', context: 'Meeting context (from the recording, not the conversation):\n- Meeting name: X' });
   assert.equal(r.ok, true);
+  assert.equal(r.drafts, 1);
   assert.equal(chat.calls.length, 1);
   assert.equal(chat.calls[0].maxTokens, FINAL_OUTPUT_TOKENS);
-  assert.equal(FINAL_OUTPUT_TOKENS, 1200);
+  assert.equal(FINAL_OUTPUT_TOKENS, 1500);
   assert.match(chat.calls[0].system, /LiteCut/);
+  assert.match(chat.calls[0].system, /- Meeting name: X/);
+  await summarize({ transcriptBody: TRANSCRIPT, chat, finalTokens: 5000 });
+  assert.equal(chat.calls[1].maxTokens, 5000, 'a provider can raise the limit (a reasoning model thinks inside it)');
 });
 
-test('summarize: a long meeting makes 700-token notes per chunk, then one 1,200-token final summary; every prompt has the glossary', async () => {
+test('summarize: a meeting too long for one request makes 1,200-token detailed notes per part, then the final notes', async () => {
   const chat = recorder((n) => (n < 99 ? '- note [00:00:01]' : GOOD));
   const long = Array.from({ length: 4000 }, (_, i) => `[00:${String(i % 60).padStart(2, '0')}:00] Sam: line number ${i} with some words about the topic`).join('\n');
-  const r = await summarize({ transcriptBody: long, chat, glossary: 'LiteCut', chunkTokens: 4500 });
+  const r = await summarize({ transcriptBody: long, chat, glossary: 'LiteCut', chunkTokens: 4500, drafts: 2 });
   assert.equal(r.ok, true);
+  assert.equal(r.drafts, 1, 'drafts apply to a single request only');
   const parts = chunkText(long, 4500).length;
   assert.ok(parts > 1);
   const maps = chat.calls.filter((c) => /ONE PART/.test(c.system));
   assert.equal(maps.length, parts);
-  assert.ok(maps.every((c) => c.maxTokens === CHUNK_OUTPUT_TOKENS && CHUNK_OUTPUT_TOKENS === 700));
+  assert.ok(maps.every((c) => c.maxTokens === CHUNK_OUTPUT_TOKENS && CHUNK_OUTPUT_TOKENS === 1200));
   const last = chat.calls.at(-1);
-  assert.match(last.system, /Do not drop any action item from the chunk notes/);
-  assert.equal(last.maxTokens, 1200);
+  assert.match(last.system, /keep every specific detail and every next step with its \[hh:mm:ss\]/);
+  assert.equal(last.maxTokens, FINAL_OUTPUT_TOKENS);
   assert.ok(chat.calls.every((c) => /LiteCut/.test(c.system)));
   assert.ok(chunkText(long, 4500).every((c) => c.length <= 4500 * 3.5), 'the 4,500-token chunk limit is kept');
 });
@@ -299,6 +355,36 @@ test('summarize: the Groq fallback suffix is added to every prompt', async () =>
   const chat = recorder();
   await summarize({ transcriptBody: TRANSCRIPT, chat, systemSuffix: FALLBACK_SUFFIX });
   assert.ok(chat.calls[0].system.endsWith('Do not add information that is not in the transcript.'));
+});
+
+test('drafts: 2 makes two drafts of the whole meeting and merges them; a failed second draft or merge falls back to draft 1', async () => {
+  const chat = recorder((n) => (n === 1 ? 'Title\n\n**A**\n- first draft point\n(Left out: x.)\n\n**Next steps**\n- None recorded' : n === 2 ? 'Title\n\n**A**\n- second draft point' : 'MERGED'));
+  const logs = [];
+  const r = await summarize({ transcriptBody: TRANSCRIPT, chat, drafts: 2, finalTokens: 2000, log: (m) => logs.push(m) });
+  assert.equal(r.ok, true);
+  assert.equal(r.text, 'MERGED');
+  assert.equal(r.drafts, 2);
+  assert.equal(chat.calls.length, 3);
+  assert.ok(chat.calls.every((c) => c.maxTokens === 2000));
+  assert.equal(chat.calls[0].system, chat.calls[1].system, 'both drafts get the same prompt');
+  assert.equal(chat.calls[0].user, chat.calls[1].user, 'both drafts see the whole transcript');
+  assert.match(chat.calls[2].system, /two drafts of notes for the SAME meeting/);
+  assert.match(chat.calls[2].user, /^DRAFT 1:\nTitle[\s\S]*first draft point[\s\S]*\n\n=====\n\nDRAFT 2:\nTitle[\s\S]*second draft point$/);
+  assert.ok(!chat.calls[2].user.includes('Left out'), 'the example note is stripped before the merge');
+  assert.ok(!logs.join('\n').includes('draft point'), 'logs never hold summary text');
+
+  const flaky = recorder((n) => { if (n === 1) return 'FIRST'; throw Object.assign(new Error('Cloudflare: server error (HTTP 503) after 3 tries'), { kind: 'transient' }); });
+  const r2 = await summarize({ transcriptBody: TRANSCRIPT, chat: flaky, drafts: 2, log: (m) => logs.push(m) });
+  assert.equal(r2.ok, true);
+  assert.equal(r2.text, 'FIRST');
+  assert.equal(r2.drafts, 1);
+  assert.ok(logs.some((l) => /second draft or the merge failed \(transient\); using the first draft/.test(l)));
+
+  const mergeFails = recorder((n) => { if (n < 3) return `DRAFT${n}`; throw Object.assign(new Error('x'), { kind: 'bad_request' }); });
+  assert.equal((await summarize({ transcriptBody: TRANSCRIPT, chat: mergeFails, drafts: 2 })).text, 'DRAFT1');
+
+  const firstFails = recorder(() => { throw Object.assign(new Error('down'), { kind: 'transient' }); });
+  assert.equal((await summarize({ transcriptBody: TRANSCRIPT, chat: firstFails, drafts: 2 })).ok, false, 'no first draft: the provider failed');
 });
 
 // ---------- the fallback chain (B6) ----------
@@ -359,27 +445,70 @@ test('chain: unmatched items are marked and counted in the result', async () => 
   assert.match(r.text, /rebuild the data lake \[00:10:20\] \(unverified\)/);
 });
 
+test('chain: the meeting context reaches the prompt, the provider\'s options are used, and a wrong weekday date is corrected', async () => {
+  const reply = 'Pricing check-in\n\n**Pricing**\n- The deck goes to the board\n\n**Next steps**\n- Alice: send the pricing deck by Friday 28 November [00:10:20]';
+  const cf = recorder(reply);
+  const logs = [];
+  const r = await runSummaryChain({
+    transcriptBody: TRANSCRIPT,
+    meeting: { name: 'Sales', startedAt: '2026-11-23T17:04:00Z', lengthSec: 1500, speakers: ['Sam', 'Alice'] },
+    providers: [{ ...provider('cloudflare-gemma', 'Gemma', cf), options: { drafts: 2, finalTokens: 2000, singleMaxTokens: 200_000 } }],
+    log: (m) => logs.push(m),
+  });
+  assert.equal(r.ok, true);
+  assert.equal(cf.calls.length, 3, 'two drafts and a merge');
+  assert.equal(r.drafts, 2);
+  assert.ok(cf.calls.every((c) => c.maxTokens === 2000));
+  assert.match(cf.calls[0].system, /- Meeting name: Sales\n- Date: Monday 23 November 2026 \(UTC\)\./);
+  assert.match(cf.calls[0].system, /- Speakers \(their Discord names\): Sam, Alice/);
+  assert.match(r.text, /by Friday 27 November \[00:10:20\]/, 'the weekday is trusted and the day corrected');
+  assert.equal(r.datesFixed, 1);
+  assert.match(r.actions, /^- Alice: send the pricing deck by Friday 27 November \[00:10:20\]$/, 'the stored next steps stop before the footer');
+  assert.ok(logs.some((l) => /corrected 1 date\(s\)/.test(l)));
+  assert.ok(!logs.join('\n').includes('pricing deck'));
+});
+
 // ---------- providers and the budget check ----------
 
 test('providers: order parsing, defaults and skipping what is not configured', () => {
-  assert.deepEqual(parseOrder(undefined), ['cloudflare-llama', 'groq-gpt-oss']);
+  const DEFAULT = ['cloudflare-gemma', 'cloudflare-gpt-oss', 'groq-gpt-oss'];
+  assert.deepEqual(parseOrder(undefined), DEFAULT);
   assert.deepEqual(parseOrder('groq-gpt-oss, Cloudflare-Llama ,nonsense,groq-gpt-oss'), ['groq-gpt-oss', 'cloudflare-llama']);
-  assert.deepEqual(parseOrder('nonsense'), ['cloudflare-llama', 'groq-gpt-oss']);
+  assert.deepEqual(parseOrder('nonsense'), DEFAULT);
 
   const logs = [];
-  const both = buildSummaryProviders({ env: { CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN, GROQ_API_KEY: 'gsk_x' }, log: (m) => logs.push(m) });
-  assert.deepEqual(both.map((p) => p.name), ['cloudflare-llama', 'groq-gpt-oss']);
-  assert.equal(both[0].systemSuffix, '');
-  assert.equal(both[1].systemSuffix, FALLBACK_SUFFIX);
-  assert.equal(both[1].chat.reasoningEffort, 'low');
+  const all = buildSummaryProviders({ env: { CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN, GROQ_API_KEY: 'gsk_x' }, log: (m) => logs.push(m) });
+  assert.deepEqual(all.map((p) => p.name), DEFAULT);
+  const [gemma, gptOss, groq] = all;
+  assert.equal(gemma.chat.model, GEMMA_MODEL);
+  assert.equal(gemma.label, GEMMA_LABEL);
+  assert.equal(gemma.chat.name, 'cloudflare-gemma');
+  assert.deepEqual(gemma.chat.extraBody, { chat_template_kwargs: { enable_thinking: false } }, 'Gemma 4 with thinking off');
+  assert.deepEqual(gemma.options, { singleMaxTokens: 200_000, drafts: 2, finalTokens: 2000 });
+  assert.equal(gptOss.chat.model, GPT_OSS_MODEL);
+  assert.equal(gptOss.label, GPT_OSS_LABEL);
+  assert.deepEqual(gptOss.chat.extraBody, {});
+  assert.equal(gptOss.options.drafts, 1);
+  assert.ok(gptOss.options.finalTokens >= 4000, 'room for its reasoning');
+  assert.ok(gemma.options.singleMaxTokens + gemma.options.finalTokens < 256_000);
+  assert.ok(gptOss.options.singleMaxTokens + gptOss.options.finalTokens < 128_000);
+  assert.ok(CLOUDFLARE_MODELS['cloudflare-llama'].options.singleMaxTokens + CLOUDFLARE_MODELS['cloudflare-llama'].options.finalTokens <= 24_000);
+  assert.equal(gemma.systemSuffix, '');
+  assert.equal(groq.systemSuffix, FALLBACK_SUFFIX);
+  assert.equal(groq.chat.reasoningEffort, 'low');
+  assert.ok(groq.options.singleMaxTokens + groq.options.finalTokens <= 8000, "a single Groq request fits the free tier's 8,000 tokens a minute");
+  assert.ok(groq.options.chunkTokens + groq.options.chunkOutputTokens + 1000 <= 8000);
   const flipped = buildSummaryProviders({ env: { SUMMARY_MODEL_ORDER: 'groq-gpt-oss,cloudflare-llama', CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN, GROQ_API_KEY: 'k' } });
   assert.deepEqual(flipped.map((p) => p.name), ['groq-gpt-oss', 'cloudflare-llama']);
+  assert.equal(flipped[1].chat.model, LLAMA_MODEL);
+  assert.equal(flipped[1].label, LLAMA_LABEL);
 
   assert.deepEqual(buildSummaryProviders({ env: { GROQ_API_KEY: 'k' }, log: (m) => logs.push(m) }).map((p) => p.name), ['groq-gpt-oss']);
-  assert.deepEqual(buildSummaryProviders({ env: { CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN } }).map((p) => p.name), ['cloudflare-llama']);
+  assert.deepEqual(buildSummaryProviders({ env: { CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN } }).map((p) => p.name), ['cloudflare-gemma', 'cloudflare-gpt-oss']);
   assert.deepEqual(buildSummaryProviders({ env: {} }), []);
-  assert.deepEqual(buildSummaryProviders({ env: { CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN, GROQ_API_KEY: 'k' }, cloudflareAllowed: false, log: (m) => logs.push(m) }).map((p) => p.name), ['groq-gpt-oss']);
-  assert.ok(logs.some((l) => /budget for summaries is used up/.test(l)));
+  const budgetLogs = [];
+  assert.deepEqual(buildSummaryProviders({ env: { CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN, GROQ_API_KEY: 'k' }, cloudflareAllowed: false, log: (m) => budgetLogs.push(m) }).map((p) => p.name), ['groq-gpt-oss']);
+  assert.equal(budgetLogs.filter((l) => /budget for summaries is used up/.test(l)).length, 1, 'said once, not once per Cloudflare model');
   const bad = buildSummaryProviders({ env: { CLOUDFLARE_ACCOUNT_ID: 'not-an-id', CLOUDFLARE_API_TOKEN: TOKEN, GROQ_API_KEY: 'k' }, log: (m) => logs.push(m) });
   assert.deepEqual(bad.map((p) => p.name), ['groq-gpt-oss']);
   assert.ok(!logs.join('\n').includes(TOKEN) && !logs.join('\n').includes('gsk_x'), 'keys never reach the log');
@@ -399,4 +528,32 @@ test('budget: reads the Worker\'s answer; any trouble means "unknown" so Cloudfl
   assert.deepEqual(await fetchSummaryBudget({ workerUrl: 'https://w.example', secret: 's', fetchImpl: async () => { throw new Error('down'); } }), { known: false });
   assert.deepEqual(await fetchSummaryBudget({ workerUrl: '', secret: 's' }), { known: false });
   assert.deepEqual(await fetchSummaryBudget({ workerUrl: 'https://w.example', secret: '' }), { known: false });
+});
+
+test('chain: a longer meeting gets a larger word limit in every final prompt', async () => {
+  const cf = recorder();
+  await runSummaryChain({ transcriptBody: TRANSCRIPT, meeting: { lengthSec: 95 * 60 }, providers: [{ ...provider('cloudflare-gemma', 'Gemma', cf), options: { drafts: 2 } }] });
+  assert.equal(cf.calls.length, 3);
+  assert.ok(cf.calls.every((c) => /under 750 words/.test(c.system)), 'both drafts and the merge');
+  const short = recorder();
+  await runSummaryChain({ transcriptBody: TRANSCRIPT, providers: [provider('x', 'X', short)] });
+  assert.match(short.calls[0].system, /under 450 words/, 'no length known: 450');
+});
+
+test('verify: word forms, names and acronyms count; generic words (dates, "complete") are never the only evidence', async () => {
+  const { stem } = await import('../pipeline/verify.mjs');
+  for (const [a, b] of [['tests', 'testing'], ['completed', 'complete'], ['planned', 'plan'], ['rotation', 'rotate'], ['handling', 'handle'], ['studies', 'study'], ['validation', 'validate']]) assert.equal(stem(a), stem(b), `${a} ~ ${b}`);
+  assert.notEqual(stem('test'), stem('text'));
+  const body = [
+    '[00:23:17] Shreyas: should I raise a PR now or after the demo tomorrow?',
+    '[00:23:21] Farah: you can make the PR now, right after you are done testing',
+    '[00:32:22] Farah: ideally I want to complete everything by Friday',
+    '[00:34:06] Farah: then I will go over this with Tim when he is available',
+  ].join('\n');
+  const flagged = (item) => verifySummary({ summaryText: `**Next steps**\n- ${item}`, transcriptBody: body }).flagged;
+  assert.equal(flagged('Shreyas: raise a PR after completing the tests [00:23:21]'), 0, '"PR" and "tests"/"testing" count');
+  assert.equal(flagged('Farah: go over the plan with Tim when available [00:34:06]'), 0, 'a short name counts');
+  assert.equal(flagged('Shreyas: complete the rotation task by Friday [00:32:22]'), 1, 'only "complete" and "Friday" match: generic, so not enough');
+  assert.equal(flagged('Shreyas: book the venue in Lisbon [00:23:21]'), 1, 'invented');
+  assert.deepEqual(itemWords('- Ana: Add the FPS check and ask Tim [00:01:00]'), ['fps', 'check', 'tim'], '"Add" and "ask" are too common to count');
 });

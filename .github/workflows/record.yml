@@ -68,11 +68,11 @@ jobs:
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          # Summary models: Cloudflare Llama 3.3 first, Groq as the fallback. The token needs "Workers AI" permission only.
+          # Summary models: Gemma 4 then gpt-oss-120b on Cloudflare, Groq last. The token needs "Workers AI" permission only.
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           # A repository VARIABLE (Settings > Secrets and variables > Actions > Variables), not a secret: variables are
-          # public in a public repo, so it holds only model names. Empty means the default: cloudflare-llama,groq-gpt-oss
+          # public in a public repo, so it holds only model names. Empty means the default: cloudflare-gemma,cloudflare-gpt-oss,groq-gpt-oss
           SUMMARY_MODEL_ORDER: ${{ vars.SUMMARY_MODEL_ORDER }}
           TEAM_CONFIG: ${{ secrets.TEAM_CONFIG }}
           WORKER_URL: ${{ secrets.WORKER_URL }}

@@ -237,11 +237,11 @@ export function transcriptPage(t, qa = { enabled: false }) {
   }
 
   // The notes: a person's edit (made on the /admin page) if there is one, otherwise the generated summary. summary_text already
-  // holds all four sections; the separate action items are only added to a generated summary that lacks them (an edited one is
-  // shown exactly as edited).
+  // holds the next steps ("Next steps", or "Action items" before 2026-11-23); the separate action items are only added to a
+  // generated summary that lacks both headings (an edited one is shown exactly as edited).
   const shown = t.summary_edited || t.summary_text;
   let notes = shown ? renderNote(shown) : '';
-  if (!t.summary_edited && t.actions_text && !/\*\*\s*Action items\s*\*\*/i.test(t.summary_text ?? '')) {
+  if (!t.summary_edited && t.actions_text && !/\*\*\s*(?:Action items|Next steps)\s*\*\*/i.test(t.summary_text ?? '')) {
     notes += renderNote(`**Action items**\n${t.actions_text}`);
   }
   if (!notes) notes = '<p>No summary is available for this meeting.</p>';

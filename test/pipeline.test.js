@@ -103,6 +103,12 @@ test('splitSections: pulls out the action items block', () => {
   assert.equal(splitSections(t).actions, '- Sam: ship [00:01:00]');
 });
 
+test('splitSections: pulls out the "Next steps" list and stops before the footer', () => {
+  const t = 'Title\n\n**Topic**\n- a\n\n**Next steps**\n- Sam: ship [00:01:00]\n- Ana: test [00:02:00]\n\nSummary written by Gemma.';
+  assert.equal(splitSections(t).actions, '- Sam: ship [00:01:00]\n- Ana: test [00:02:00]');
+  assert.equal(splitSections('Title\n\n**Topic**\n- a').actions, '');
+});
+
 test('summarize: short transcript is one request; failures never throw', async () => {
   const calls = [];
   const chat = { requests: 0, complete: async (_system, u) => { calls.push(u); chat.requests++; return '**Summary**\n- ok\n\n**Action items**\n- None recorded'; } };

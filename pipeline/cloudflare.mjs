@@ -1,4 +1,5 @@
-// Chat on Cloudflare Workers AI (Llama 3.3 70B) over the OpenAI-compatible REST path, used for the post-meeting summary.
+// Chat on Cloudflare Workers AI over the OpenAI-compatible REST path, used for the post-meeting summary. The model is chosen
+// in pipeline/providers.mjs (Gemma 4, gpt-oss-120b or Llama 3.3); Llama 3.3 is the default here.
 //   POST https://api.cloudflare.com/client/v4/accounts/<account id>/ai/v1/chat/completions
 // This path returns `usage` including Cloudflare's own `neurons` figure. (The native /ai/run path also echoes the whole
 // prompt back in its answer, so it is deliberately not used.) The token is never put in a message, log line or error.
@@ -15,6 +16,11 @@ export class CloudflareChatClient {
     accountId,
     apiToken,
     model = LLAMA_MODEL,
+    name = 'cloudflare-llama',
+    label = LLAMA_LABEL,
+    // extra request fields for this model, e.g. { chat_template_kwargs: { enable_thinking: false } } for Gemma 4
+    extraBody = {},
+    temperature = 0.2,
     limiter = cfLimiter(),
     maxTokens = 1200,
     timeoutMs = 60_000,
@@ -25,12 +31,12 @@ export class CloudflareChatClient {
   } = {}) {
     if (!String(apiToken ?? '').trim()) throw new EngineError('auth', 'CLOUDFLARE_API_TOKEN is missing');
     if (!ACCOUNT_ID_RE.test(String(accountId ?? '').trim())) throw new EngineError('auth', 'CLOUDFLARE_ACCOUNT_ID must be 32 hex characters');
-    Object.assign(this, { model, limiter, maxTokens, timeoutMs, maxAttempts, sleep });
+    Object.assign(this, { model, limiter, maxTokens, timeoutMs, maxAttempts, sleep, extraBody, temperature });
     this.url = `${baseUrl}/accounts/${String(accountId).trim()}/ai/v1/chat/completions`;
     this._token = String(apiToken).trim();
     this._fetch = fetchImpl ?? ((...a) => fetch(...a));
-    this.name = 'cloudflare-llama';
-    this.label = LLAMA_LABEL;
+    this.name = name;
+    this.label = label;
     this.requests = 0;
     this.usage = { requests: 0, promptTokens: 0, completionTokens: 0, neurons: 0 };
   }
@@ -39,8 +45,9 @@ export class CloudflareChatClient {
   async complete(system, user, { maxTokens } = {}) {
     this.requests++;
     const body = JSON.stringify({
+      ...this.extraBody,
       model: this.model,
-      temperature: 0.2,
+      temperature: this.temperature,
       max_tokens: maxTokens ?? this.maxTokens,
       messages: [
         { role: 'system', content: system },
@@ -98,7 +105,11 @@ export class CloudflareChatClient {
     this.usage.promptTokens += Number(usage.prompt_tokens) || 0;
     this.usage.completionTokens += Number(usage.completion_tokens) || 0;
     this.usage.neurons += chatNeurons(this.model, usage);
-    if (typeof text !== 'string' || !text.trim()) throw new EngineError('bad_request', 'the model returned an empty answer');
+    if (typeof text !== 'string' || !text.trim()) {
+      // a reasoning model can spend the whole output limit thinking and return no answer at all
+      if (json?.choices?.[0]?.finish_reason === 'length') throw new EngineError('bad_request', 'the model used its whole output limit without an answer');
+      throw new EngineError('bad_request', 'the model returned an empty answer');
+    }
     return text.trim();
   }
 }

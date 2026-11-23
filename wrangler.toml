@@ -47,7 +47,7 @@ SUMMARY_SOFT_CAP = "9500"   # the recorder uses Cloudflare for a summary only wh
 # Per-link limits (a failed attempt still counts):
 QA_HOURLY_PER_LINK = "20"
 QA_DAILY_PER_LINK = "100"
-# QA_MODEL_ORDER = "cloudflare-llama,groq-gpt-oss"   # swap or drop a model
+# QA_MODEL_ORDER = "cloudflare-gemma,groq-gpt-oss"   # the default; "cloudflare-llama,groq-gpt-oss" uses Llama 3.3 instead
 # LLM_MODEL = "openai/gpt-oss-120b"                  # the Groq model
 # Optional: the address to put in links if it differs from the one the recorder calls, e.g. your own domain.
 # PUBLIC_URL = "https://meetings.example.com"

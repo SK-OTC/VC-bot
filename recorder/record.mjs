@@ -278,7 +278,7 @@ async function main() {
 
   // ---- engines -------------------------------------------------------------------------------
   const { engine, fallbackEngine } = await enginePlan.resolve();
-  // Summary models: Cloudflare Llama 3.3 first, Groq gpt-oss as the fallback (SUMMARY_MODEL_ORDER). Ask the Worker whether
+  // Summary models: Gemma 4 then gpt-oss-120b on Cloudflare, Groq gpt-oss last (SUMMARY_MODEL_ORDER). Ask the Worker whether
   // today's Cloudflare Neuron budget for summaries has room; if it cannot be reached, Cloudflare is simply tried.
   const budget = await fetchSummaryBudget({ workerUrl: cfg.workerUrl, secret: cfg.workerSecret });
   const providers = buildSummaryProviders({ env: process.env, cloudflareAllowed: !budget.known || budget.allowed, log });
