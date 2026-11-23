@@ -1,4 +1,4 @@
-// Settings for one recording session. Everything team-specific comes from /setup-recording (fetched from the Worker) or,
+// Settings for one recording session. Everything team-specific comes from /recording voice-channel (fetched from the Worker) or,
 // as a fallback, the TEAM_CONFIG secret, so the public workflow only ever sees a channel ID and a session ID.
 // Nothing here talks to Discord.
 
@@ -28,8 +28,8 @@ export function parseSessionConfig(env, remote = null) {
   const channelId = String(env.CHANNEL_ID ?? '').trim();
   if (!ID_RE.test(channelId)) problems.push('CHANNEL_ID must be a voice channel ID (17-20 digits)');
 
-  // Settings made with /setup-recording come from the Worker (`remote`) and win. TEAM_CONFIG is the fallback for
-  // runs started by hand or from before /setup-recording existed.
+  // Settings made with /recording voice-channel come from the Worker (`remote`) and win. TEAM_CONFIG is the fallback for
+  // runs started by hand or from before /recording voice-channel existed.
   let team = null;
   if (remote) {
     if (ID_RE.test(channelId) && remote.voiceChannelId !== channelId) problems.push('the settings from the Worker are for a different voice channel');
@@ -43,13 +43,13 @@ export function parseSessionConfig(env, remote = null) {
     }
   }
   if (!team && ID_RE.test(channelId)) {
-    problems.push('There are no recording settings for this voice channel (no /setup-recording from the Worker, and TEAM_CONFIG has no entry for it), so the bot does not know where to post');
+    problems.push('There are no recording settings for this voice channel (no /recording voice-channel from the Worker, and TEAM_CONFIG has no entry for it), so the bot does not know where to post');
   }
-  // save / post come from /transcript-settings (default: both on). A hand-run with TEAM_CONFIG always saves and posts.
+  // save / post come from /recording setup name:Default (default: both on). A hand-run with TEAM_CONFIG always saves and posts.
   const save = team ? team.save !== false : true;
   const post = team ? team.post !== false : true;
   if (team) {
-    if (!save && !post) problems.push('saving and posting are both off, so the transcript would be thrown away (change it with /transcript-settings)');
+    if (!save && !post) problems.push('saving and posting are both off, so the transcript would be thrown away (change it with /recording setup name:Default)');
     if (post && !ID_RE.test(String(team.transcriptChannelId ?? ''))) problems.push('there is no channel to post the transcript in (TEAM_CONFIG entry needs transcriptChannelId, or start the recording with /start-recording)');
     if (team.backupChannelId && !ID_RE.test(String(team.backupChannelId))) problems.push('backupChannelId must be a channel ID');
     if (team.backupChannelId && team.backupChannelId === team.transcriptChannelId) problems.push('backupChannelId must be a different channel from transcriptChannelId');

@@ -49,9 +49,9 @@ export function reconnectMessage(reconnectUrl) {
   return (
     'Your Google sign-in for the meeting bot stopped working (Google says access was revoked or has expired), so I can no longer add meetings to your calendar.\n\n' +
     (reconnectUrl
-      ? `Reconnect here: ${hyperlink('Sign in with Google', reconnectUrl)}\nThe link works once and for 10 minutes. If it has expired, run \`/calendar connect\` in your server for a new one. ` +
+      ? `Reconnect here: ${hyperlink('Sign in with Google', reconnectUrl)}\nThe link works once and for 10 minutes. If it has expired, run \`/calendar\` in your server and press Connect for a new one. ` +
         'Google shows an "unverified app" warning: that is expected. Click **Advanced**, then **Go to … (unsafe)**, and leave every box ticked.'
-      : 'Reconnect by running `/calendar connect` in your server.')
+      : 'Reconnect by running `/calendar` in your server.')
   );
 }
 
@@ -74,7 +74,7 @@ export function channelNotice(m, action, link, { organizerTold }) {
   return (
     `Google Calendar sync is not working for **${m.name}**, so it was not ${action === 'create' ? 'added to' : 'updated on'} the organizer's calendar. ` +
     `To put it on your own calendar: ${hyperlink('Add to Google Calendar', link.url)}\n` +
-    (organizerTold ? 'The organizer has been sent a link to reconnect.' : 'The organizer needs to reconnect with `/calendar connect`.')
+    (organizerTold ? 'The organizer has been sent a link to reconnect.' : 'The organizer needs to reconnect with `/calendar`.')
   );
 }
 

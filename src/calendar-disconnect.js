@@ -1,4 +1,4 @@
-// /calendar disconnect for a Google sign-in: revoke the token at Google, delete the stored row, stop syncing the PM's meetings.
+// The /calendar "Disconnect Google" button: revoke the token at Google, delete the stored row, stop syncing the PM's meetings.
 //
 //  - Revoking the refresh token ends the whole sign-in, so the app disappears from the person's Google permissions page.
 //  - If Google cannot be reached, NOTHING is deleted and the PM is told to try again: deleting the stored token first would leave

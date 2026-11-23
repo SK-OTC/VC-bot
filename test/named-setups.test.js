@@ -16,7 +16,7 @@ import { createFakeDiscord, createTestDb } from './helpers/d1.js';
 const NOW = Math.floor(Date.UTC(2026, 10, 22, 12, 0, 0) / 1000);
 const GUILD = '222222222222222222';
 const OTHER_GUILD = '888888888888888888';
-const VC = '111111111111111111'; // has a /setup-recording
+const VC = '111111111111111111'; // allowed with /recording voice-channel
 const VC_NO_SETUP = '555555555555555555';
 const MEETING_CH = '999999999999999999'; // where the command is typed / reminders go
 const PRIV = '301000000000000001'; // a private text channel (hidden from @everyone)
@@ -243,10 +243,11 @@ test('/new-meeting: recording_setup with a Google Meet or any other location is 
   }
 });
 
-test('/new-meeting: a voice channel without /setup-recording, or a link to another server, says it will NOT be recorded', async () => {
+test('/new-meeting: a voice channel not allowed with /recording voice-channel, or a link to another server, says it will NOT be recorded', async () => {
   const t = setup();
   const r = await t.run(slash('new-meeting', { name: 'A', date: TOMORROW, time: '15:00', timezone: 'UTC', location: link(VC_NO_SETUP) }));
   assert.match(r.data.content, new RegExp(`<#${VC_NO_SETUP}> is not set up for recording, so this meeting will \\*\\*not\\*\\* be recorded`));
+  assert.match(r.data.content, /A server admin can allow it with `\/recording voice-channel`/);
   const other = await t.run(slash('new-meeting', { name: 'B', date: TOMORROW, time: '15:00', timezone: 'UTC', location: link('666666666666666666', OTHER_GUILD) }));
   assert.match(other.data.content, /another server, so this meeting will not be recorded/);
 });
@@ -422,13 +423,13 @@ test('the database itself refuses a second session for the same meeting occurren
 
 test('resolveRouting: named channels win; blanks fall back as before; a link channel equal to the private one is dropped; posting off wins', () => {
   const settings = DEFAULT_TRANSCRIPT_SETTINGS;
-  const vcSetup = { transcript_channel_id: null, backup_channel_id: '400000000000000001' };
+  const vcSetup = { backup_channel_id: '400000000000000001' };
   const base = resolveRouting({ settings, setup: vcSetup, session: { start_channel_id: MEETING_CH } });
   assert.deepEqual([base.privateChannelId, base.summaryChannelId, base.linkChannelId, base.audioChannelId], [MEETING_CH, MEETING_CH, null, '400000000000000001']);
   const named = resolveRouting({ settings, setup: vcSetup, session: { start_channel_id: MEETING_CH, private_channel_id: PRIV, summary_channel_id: SUMMARY, link_channel_id: LINKS, audio_channel_id: PRIV } });
   assert.deepEqual([named.privateChannelId, named.summaryChannelId, named.linkChannelId, named.audioChannelId], [PRIV, SUMMARY, LINKS, PRIV]);
   assert.equal(resolveRouting({ settings, setup: vcSetup, session: { private_channel_id: PRIV, link_channel_id: PRIV } }).linkChannelId, null);
-  const off = resolveRouting({ settings: { save: true, post: false, destination: null }, setup: vcSetup, session: { private_channel_id: PRIV, summary_channel_id: SUMMARY, link_channel_id: LINKS } });
+  const off = resolveRouting({ settings: { save: true, post: false }, setup: vcSetup, session: { private_channel_id: PRIV, summary_channel_id: SUMMARY, link_channel_id: LINKS } });
   assert.deepEqual([off.privateChannelId, off.summaryChannelId, off.linkChannelId], [null, null, null]);
 });
 

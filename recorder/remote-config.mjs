@@ -1,4 +1,4 @@
-// Asks the Worker where this recording's transcript goes (the settings an admin made with /setup-recording).
+// Asks the Worker where this recording's transcript goes (the settings an admin made with /recording voice-channel).
 // The mapping of channels is fetched here instead of being passed as workflow inputs, because the inputs of a run in a
 // public repository are public. Nothing fetched is ever logged. Never throws.
 import { setTimeout as sleepFor } from 'node:timers/promises';

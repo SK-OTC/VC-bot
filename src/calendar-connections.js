@@ -88,7 +88,7 @@ export async function readRefreshToken({ db, encKey, discordUserId }) {
 }
 
 /**
- * Marks a connected PM disconnected and wipes the stored token. The row stays so /calendar status can say what happened.
+ * Marks a connected PM disconnected and wipes the stored token. The row stays so /calendar can say what happened.
  * Returns true only if this call made the change (false when they were not connected), so a caller can tell the PM exactly once.
  */
 export async function markDisconnected(db, discordUserId, result, nowSec) {

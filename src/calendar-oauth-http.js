@@ -37,7 +37,7 @@ function pageHtml(title, paragraphs) {
 const respond = (method, status, title, paragraphs) =>
   new Response(method === 'HEAD' ? null : pageHtml(title, paragraphs), { status, headers: HEADERS });
 
-const RETRY = 'Go back to Discord and run <code>/calendar connect</code> for a fresh link.';
+const RETRY = 'Go back to Discord and run <code>/calendar</code> for a fresh link.';
 
 /** deps (tests only): { fetchImpl, discord }. */
 export async function handleGoogleCallback(request, env, ctx, url, nowSec, deps = {}) {
@@ -69,7 +69,7 @@ export async function handleGoogleCallback(request, env, ctx, url, nowSec, deps 
     if (existing?.status === 'connected') {
       return say(409, 'Already connected', [
         `A Google account (${escapeHtml(existing.google_email)}) is already connected for you. Nothing was changed.`,
-        'To connect a different account, run <code>/calendar disconnect</code> in Discord first, then <code>/calendar connect</code>.',
+        'To connect a different account, run <code>/calendar</code> in Discord, press <strong>Disconnect Google</strong>, then <strong>Connect</strong>.',
       ]);
     }
 
@@ -88,7 +88,7 @@ export async function handleGoogleCallback(request, env, ctx, url, nowSec, deps 
     if (!got.refreshToken) {
       return say(400, 'Google did not give lasting access', [
         'Google only gives the bot lasting access the first time you approve it, and it did not this time (usually because you approved it before).',
-        'Go to <a href="https://myaccount.google.com/permissions" rel="noreferrer">myaccount.google.com/permissions</a>, remove this app\'s access, then run <code>/calendar connect</code> again.',
+        'Go to <a href="https://myaccount.google.com/permissions" rel="noreferrer">myaccount.google.com/permissions</a>, remove this app\'s access, then run <code>/calendar</code> again.',
       ]);
     }
 

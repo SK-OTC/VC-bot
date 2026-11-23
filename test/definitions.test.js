@@ -31,8 +31,8 @@ test('command definitions satisfy Discord registration rules', () => {
   assert.deepEqual(COMMANDS.map((c) => c.name), [
     'new-meeting', 'update-meeting', 'cancel-meeting', 'upcoming-meetings',
     'add-update-preset', 'meeting-presets', 'delete-preset',
-    'add-team', 'remove-team-member', 'show-teams', 'delete-team',
-    'calendar', 'setup-recording', 'recording-settings', 'remove-recording-setup', 'recording', 'start-recording', 'stop-recording', 'transcript-settings', 'set-timezone',
+    'add-team', 'remove-team-member', 'show-teams',
+    'calendar', 'recording', 'start-recording', 'stop-recording', 'set-timezone',
   ]);
   const seen = new Set();
   for (const c of COMMANDS) {
@@ -47,18 +47,30 @@ test('command definitions satisfy Discord registration rules', () => {
   // the old grouped commands are gone
   assert.equal(byName('meeting-time'), undefined);
   assert.equal(byName('guests'), undefined);
+  for (const gone of ['delete-team', 'setup-recording', 'recording-settings', 'remove-recording-setup', 'transcript-settings']) {
+    assert.equal(byName(gone), undefined, `${gone} was folded into another command`);
+  }
 });
 
-test('only /calendar and /recording have subcommands', () => {
+test('only /recording has subcommands', () => {
   for (const c of COMMANDS) {
     const hasSubs = (c.options ?? []).some((o) => o.type === 1);
-    assert.equal(hasSubs, c.name === 'calendar' || c.name === 'recording', c.name);
+    assert.equal(hasSubs, c.name === 'recording', c.name);
   }
-  assert.deepEqual(optionNames('calendar'), ['connect', 'disconnect', 'status']);
-  assert.deepEqual(optionNames('recording'), ['setup', 'list', 'delete']);
-  const setup = byName('recording').options.find((o) => o.name === 'setup');
-  assert.deepEqual(setup.options.map((o) => o.name), ['name', 'private_channel', 'summary_channel', 'link_channel', 'audio', 'clear']);
+  assert.deepEqual(optionNames('recording'), ['setup', 'voice-channel', 'list', 'delete']);
+  const sub = (n) => byName('recording').options.find((o) => o.name === n);
+  const setup = sub('setup');
+  assert.deepEqual(setup.options.map((o) => o.name), ['name', 'private_channel', 'summary_channel', 'link_channel', 'audio', 'clear', 'save', 'post']);
   for (const n of ['private_channel', 'summary_channel', 'link_channel']) assert.deepEqual(setup.options.find((o) => o.name === n).channel_types, [0, 5], n);
+  for (const n of ['save', 'post']) assert.equal(setup.options.find((o) => o.name === n).type, 5, n);
+  const vc = sub('voice-channel');
+  assert.deepEqual(vc.options.map((o) => o.name), ['voice_channel', 'name', 'backup_channel', 'language', 'glossary', 'clear']);
+  assert.ok(!vc.options.some((o) => o.name === 'transcript_channel'), 'the per-voice-channel transcript channel was dropped');
+  assert.deepEqual(vc.options.find((o) => o.name === 'clear').choices.map((c) => c.value), ['backup_channel', 'glossary']);
+  assert.deepEqual(sub('list').options ?? [], []);
+  const del = sub('delete');
+  assert.deepEqual(del.options.map((o) => [o.name, !!o.required]), [['name', false], ['voice_channel', false]]);
+  assert.deepEqual(del.options.find((o) => o.name === 'voice_channel').channel_types, [2]);
 });
 
 test('recording_setup is on /new-meeting, /update-meeting and /add-update-preset, as an autocompleted name', () => {
@@ -84,9 +96,9 @@ test('every option the handlers read exists in the definitions', () => {
   assert.deepEqual(optionNames('cancel-meeting'), ['name']);
   assert.deepEqual(optionNames('delete-preset'), ['name']);
   assert.deepEqual(optionNames('add-team'), ['team', 'emails']);
-  assert.deepEqual(optionNames('remove-team-member'), ['team', 'emails']);
+  assert.deepEqual(optionNames('remove-team-member'), ['team', 'emails', 'all']);
   assert.deepEqual(optionNames('show-teams'), ['team']);
-  assert.deepEqual(optionNames('delete-team'), ['team']);
+  assert.deepEqual(optionNames('calendar'), ['url']);
 });
 
 test('recording commands: optional voice-channel picker (voice channels only), stop has force', () => {

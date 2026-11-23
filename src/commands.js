@@ -50,9 +50,7 @@ import {
 import { DEFAULT_DURATION_MIN, parseDuration, parseReminder } from './duration.js';
 import { canManageOwner, fail, optionMap, reply } from './replies.js';
 import { cmdStartRecording, cmdStopRecording } from './recording-commands.js';
-import { cmdTranscriptSettings } from './transcript-settings-commands.js';
-import { cmdRecordingSettings, cmdRemoveRecordingSetup, cmdSetupRecording } from './setup-commands.js';
-import { NOT_ENABLED, cmdCalendar, cmdGuests, followupFrom, newEventId, resolveCalendarAccount, resolveTeam, suggestTeams } from './calendar-commands.js';
+import { NOT_ENABLED, cmdCalendar, cmdCalendarButton, cmdGuests, followupFrom, newEventId, resolveCalendarAccount, resolveTeam, suggestTeams } from './calendar-commands.js';
 import { ONLY_DISCORD_LOCATION, cmdRecording, planRecordingSetup } from './named-setup-commands.js';
 import { getNamedSetup, isDefaultChoice, searchNamedSetupNames } from './named-setups.js';
 import { parseChannelLink } from './voice-link.js';
@@ -268,9 +266,9 @@ async function createMeeting(ctx, o, { notes = [], typedRecordingSetup = o.recor
   } else if (!wantCalendar) {
     extraLines.push('Calendar: off for this meeting.');
   } else if (resolved.reason === 'other_team') {
-    extraLines.push('Calendar: not added. Your Google Calendar is connected for a different server. Run /calendar connect here (after /calendar disconnect) to use it in this one.');
+    extraLines.push('Calendar: not added. Your Google Calendar is connected for a different server. Run /calendar here, press Disconnect, then Connect, to use it in this one.');
   } else {
-    extraLines.push('Calendar: not added to Google Calendar. Run /calendar connect first.');
+    extraLines.push('Calendar: not added to Google Calendar. Run /calendar and press Connect first.');
   }
   if (!account && team.key) {
     extraLines.push(`Guest team: ${team.name} (nobody is invited because this meeting is not on a Google Calendar)`);
@@ -384,8 +382,8 @@ async function cmdUpdate(ctx, o) {
     if (!found.provider) {
       return fail(
         found.reason === 'other_team'
-          ? 'Your Google Calendar is connected for a different server, so I can not add this meeting to it here. Run `/calendar disconnect`, then `/calendar connect` in this server.'
-          : 'I can only add this meeting to your Google Calendar once you connect it. Run `/calendar connect` first.',
+          ? 'Your Google Calendar is connected for a different server, so I can not add this meeting to it here. Run `/calendar` in this server, press Disconnect, then Connect.'
+          : 'I can only add this meeting to your Google Calendar once you connect it. Run `/calendar` and press Connect first.',
       );
     }
     attach = found;
@@ -784,11 +782,12 @@ async function autocompleteLocation(ctx, command, inner) {
 async function handleAutocomplete(interaction, ctx) {
   const root = interaction.data.options ?? [];
   const command = interaction.data.name;
-  // Only /calendar and /recording have subcommands; every other command has its options at the top level.
-  const inner = command === 'calendar' || command === 'recording' ? root[0]?.options ?? [] : root;
+  // Only /recording has subcommands; every other command has its options at the top level.
+  const inner = command === 'recording' ? root[0]?.options ?? [] : root;
   const focused = inner.find((o) => o.focused);
   let choices = [];
   if (command === 'recording' && focused?.name === 'name' && ctx.guildId) {
+    // /recording setup and /recording delete both name a recording setup (voice-channel's `name` is free text, no autocomplete).
     choices = (await searchNamedSetupNames(ctx.db, ctx.guildId, focused.value)).map((n) => ({ name: n.slice(0, 100), value: n }));
   } else if (focused?.name === 'recording_setup' && ctx.guildId) {
     // Offered only when the meeting's location is a Discord voice channel link: typed in this command, or else the one saved on
@@ -834,6 +833,12 @@ export async function handleInteraction(interaction, { db, discord, bridge = nul
   const ctx = { db, discord, bridge, google, recorder, defer, extraHosts, env, origin, nowSec, interaction, userId, guildId: interaction.guild_id };
 
   if (interaction.type === InteractionType.AUTOCOMPLETE) return handleAutocomplete(interaction, ctx);
+  if (interaction.type === InteractionType.MESSAGE_COMPONENT) {
+    if (!ctx.guildId || !userId) return fail('Please use this inside a server.');
+    // The only buttons are the Connect / Disconnect buttons under /calendar. They act on the account of whoever clicks.
+    if (String(interaction.data?.custom_id ?? '').startsWith('calendar:')) return cmdCalendarButton(ctx, interaction.data.custom_id);
+    return fail('That button is no longer in use. Run the command again.');
+  }
   if (interaction.type !== InteractionType.APPLICATION_COMMAND) return fail('I can only handle slash commands.');
   if (!ctx.guildId || !userId) return fail('Please use this command inside a server.');
 
@@ -857,27 +862,17 @@ export async function handleInteraction(interaction, { db, discord, bridge = nul
     case 'add-team':
       return cmdGuests(ctx, 'add', o);
     case 'remove-team-member':
-      return cmdGuests(ctx, 'remove', o);
+      return cmdGuests(ctx, o.all === true ? 'delete-team' : 'remove', o);
     case 'show-teams':
       return cmdGuests(ctx, 'list', o);
-    case 'delete-team':
-      return cmdGuests(ctx, 'delete-team', o);
     case 'calendar':
-      return cmdCalendar(ctx, options?.[0]?.name, optionMap(options?.[0]?.options));
+      return cmdCalendar(ctx, o);
     case 'set-timezone':
       return cmdSetTimezone(ctx, o);
     case 'start-recording':
       return cmdStartRecording(ctx, o);
     case 'stop-recording':
       return cmdStopRecording(ctx, o);
-    case 'setup-recording':
-      return cmdSetupRecording(ctx, o);
-    case 'recording-settings':
-      return cmdRecordingSettings(ctx, o);
-    case 'remove-recording-setup':
-      return cmdRemoveRecordingSetup(ctx, o);
-    case 'transcript-settings':
-      return cmdTranscriptSettings(ctx, o);
     case 'recording':
       return cmdRecording(ctx, options?.[0]?.name, optionMap(options?.[0]?.options));
   }

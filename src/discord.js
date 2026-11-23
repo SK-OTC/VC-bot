@@ -1,7 +1,10 @@
 // Discord plumbing: request signature verification and the REST client used to post messages.
 
-export const InteractionType = { PING: 1, APPLICATION_COMMAND: 2, AUTOCOMPLETE: 4 };
-export const ResponseType = { PONG: 1, MESSAGE: 4, DEFERRED: 5, AUTOCOMPLETE: 8 };
+export const InteractionType = { PING: 1, APPLICATION_COMMAND: 2, MESSAGE_COMPONENT: 3, AUTOCOMPLETE: 4 };
+// UPDATE_MESSAGE / DEFERRED_UPDATE answer a button click by changing the message the button is on.
+export const ResponseType = { PONG: 1, MESSAGE: 4, DEFERRED: 5, DEFERRED_UPDATE: 6, UPDATE_MESSAGE: 7, AUTOCOMPLETE: 8 };
+export const ComponentType = { ACTION_ROW: 1, BUTTON: 2 };
+export const ButtonStyle = { PRIMARY: 1, SECONDARY: 2, DANGER: 4, LINK: 5 };
 export const MessageFlags = { EPHEMERAL: 64 };
 const VIEW_CHANNEL = 1n << 10n; // Discord permission bit
 
@@ -104,12 +107,15 @@ export function createDiscordClient({ token, apiBase = 'https://discord.com/api/
       { asBot: false },
     );
 
-  /** Replaces the "thinking..." placeholder of a deferred reply. */
-  const editOriginal = (appId, interactionToken, { content }) =>
+  /**
+   * Replaces the "thinking..." placeholder of a deferred reply (or, after a button click, the message the button is on).
+   * `components` is only sent when given: an empty array removes the buttons, leaving it out keeps them.
+   */
+  const editOriginal = (appId, interactionToken, { content, components }) =>
     send(
       'PATCH',
       `${apiBase}/webhooks/${appId}/${interactionToken}/messages/@original`,
-      { content, allowed_mentions: { parse: [] } },
+      { content, allowed_mentions: { parse: [] }, ...(components ? { components } : {}) },
       { asBot: false },
     );
 

@@ -105,7 +105,7 @@ export default {
         db: env.DB,
         discord: makeDiscord(env),
         bridge: makeBridge(env),
-        google: makeGoogleForCommands(env), // sign-in settings (no secret) and /calendar disconnect; null = Google sign-in is not set up
+        google: makeGoogleForCommands(env), // sign-in settings (no secret) and the /calendar Disconnect button; null = Google sign-in is not set up
         recorder: makeRecorder(env),
         defer: (promise) => ctx.waitUntil(promise),
         extraHosts: extraBridgeHosts(env),

@@ -54,23 +54,27 @@ function setup(envOver) {
     await Promise.all(pending.splice(0));
     return { res, html: await res.text(), google };
   };
+  // A Google sign-in starts from the Connect button under /calendar (a component click); `url` is the Apps Script bridge command.
   const connect = (opts = {}) =>
     handleInteraction(
       {
-        type: 2,
+        type: opts.url ? 2 : 3,
         guild_id: 'g1',
         channel_id: 'c1',
         application_id: 'app1',
         token: 'tok',
         member: { user: { id: 'u1' }, permissions: '0' },
-        data: { name: 'calendar', options: [{ type: 1, name: 'connect', options: opts.url ? [{ name: 'url', type: 3, value: opts.url }] : [] }] },
+        data: opts.url ? { name: 'calendar', options: [{ name: 'url', type: 3, value: opts.url }] } : { custom_id: 'calendar:connect', component_type: 2 },
       },
       { db, discord, bridge: opts.bridge ?? null, google: opts.google === undefined ? publicGoogleConfig(env) : opts.google, nowSec: NOW },
     );
   return { db, discord, env, callback, connect };
 }
 
-const linkIn = (reply) => /<(https:\/\/accounts\.google\.com[^>]+)>/.exec(reply.data.content)?.[1];
+// The link is a link button, or (when too long for one) a link in the text.
+const linkIn = (reply) =>
+  (reply.data.components ?? []).flatMap((r) => r.components ?? []).find((b) => b.url)?.url ??
+  /<(https:\/\/accounts\.google\.com[^>]+)>/.exec(reply.data.content)?.[1];
 const stateOf = (reply) => new URL(linkIn(reply)).searchParams.get('state');
 
 // Nothing secret may reach the logs, whatever happens.
@@ -83,12 +87,13 @@ test.afterEach(() => {
   for (const secret of [REFRESH, ACCESS, CLIENT_SECRET, ENC_KEY, 'gcode-123']) assert.ok(!all.includes(secret), 'a secret was logged');
 });
 
-// ---------- /calendar connect ----------
+// ---------- the Connect button under /calendar ----------
 
-test('/calendar connect replies privately with a Google link that asks for exactly the allowed scopes', async () => {
+test('the Connect button replaces the private /calendar message with a Google link that asks for exactly the allowed scopes', async () => {
   const { connect, db } = setup();
   const reply = await connect();
-  assert.equal(reply.data.flags, 64, 'ephemeral');
+  assert.equal(reply.type, 7, 'it updates the (ephemeral) message the button is on, so it stays private');
+  assert.ok(linkIn(reply).length <= 512, 'short enough for a link button');
   const u = new URL(linkIn(reply));
   assert.equal(u.origin + u.pathname, 'https://accounts.google.com/o/oauth2/v2/auth');
   const p = u.searchParams;
@@ -125,7 +130,7 @@ test('a PM who is already connected is told to disconnect first, and no link is 
   await saveRefreshToken({ db, encKey: ENC_KEY, discordUserId: 'u1', teamId: 'g1', googleEmail: 'pm@gmail.com', refreshToken: REFRESH, nowSec: NOW });
   const reply = await connect();
   assert.match(reply.data.content, /already connected/);
-  assert.match(reply.data.content, /\/calendar disconnect/);
+  assert.match(reply.data.content, /Disconnect Google/);
   assert.ok(!linkIn(reply));
   assert.equal(db.sql('SELECT * FROM calendar_connect_codes').length, 0);
 });
@@ -277,7 +282,7 @@ test('already connected by the time the callback runs: Google is not asked for a
   await saveRefreshToken({ db, encKey: ENC_KEY, discordUserId: 'u1', teamId: 'g1', googleEmail: 'first@gmail.com', refreshToken: 'the-first-token', nowSec: NOW });
   const { res, html, google } = await callback(state);
   assert.equal(res.status, 409);
-  assert.match(html, /\/calendar disconnect/);
+  assert.match(html, /Disconnect Google/);
   assert.equal(google.calls.length, 0);
   assert.equal(await readRefreshToken({ db, encKey: env.TOKEN_ENC_KEY, discordUserId: 'u1' }), 'the-first-token');
   assert.equal((await getConnection(db, 'u1')).google_email, 'first@gmail.com');

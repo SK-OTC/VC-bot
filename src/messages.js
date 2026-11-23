@@ -100,7 +100,7 @@ export function recordingStatusLine(r) {
         ? '⚠️ Not recorded: the recorder could not be started.'
         : `🔴 Recording: this meeting's recording in ${vc} has already been started${setup}.`;
     case 'no_setup':
-      return `⚠️ Not recorded: ${vc} is not set up for recording. A server admin can allow it with \`/setup-recording\`.`;
+      return `⚠️ Not recorded: ${vc} is not set up for recording. A server admin can allow it with \`/recording voice-channel\`.`;
     case 'other_server':
       return '⚠️ Not recorded: the location links to a channel in another server.';
     case 'busy_channel':

@@ -12,7 +12,7 @@ One Discord bot, in one repository, in three parts:
 
 Where to find things: [Part 1](#part-1-feasibility-test) · [Part 2](#part-2-recording-transcripts-and-summaries) ·
 [Transcription and glossary](#transcription-parakeet-on-the-runner-groq-whisper-as-the-fallback) · [What is tested](#what-is-and-is-not-tested) ·
-[Part 3: the Worker](#part-3-the-cloudflare-worker-one-bot-one-repo) · [Setting up a server](#setting-up-a-server-setup-recording-no-github-secret-to-edit) ·
+[Part 3: the Worker](#part-3-the-cloudflare-worker-one-bot-one-repo) · [Setting up recording](#setting-up-recording-recording-admins-only-no-github-secret-to-edit) ·
 [Google Calendar](#google-calendar-sync-sign-in-with-google) · [Web links and Q&A](#private-web-links-for-transcripts) ·
 [Summaries and the Neuron budget](#summaries-llama-33-on-cloudflare-groq-as-the-fallback-and-the-neuron-budget)
 
@@ -109,7 +109,7 @@ with what you hear when you play both speakers' files together.
 | `recorder/record.mjs` | The production recorder. Joins, renames itself `[REC] ...`, posts a notice, records, stops by rule, then hands over to the steps below |
 | `recorder/track.mjs` | One time-aligned Ogg file per speaker (silence filled in), and the overlap measurement |
 | `recorder/ogg.mjs` | Minimal Ogg Opus writer |
-| `recorder/config.mjs` | Reads settings; takes the channel settings from `/setup-recording` (via `recorder/remote-config.mjs`) or the optional `TEAM_CONFIG` secret; refuses to run without them |
+| `recorder/config.mjs` | Reads settings; takes the channel settings from `/recording` (via `recorder/remote-config.mjs`) or the optional `TEAM_CONFIG` secret; refuses to run without them |
 | `recorder/stop.mjs` | Stop rules (limit, empty channel, silence, stop flag), nickname, attachment batching |
 | `recorder/session.mjs` | After the meeting: transcribe, post transcript, summary, audio backup, upload to the Worker |
 | `recorder/report.mjs` | Tells the Worker the job has ended (done or failed), so the voice channel is free again |
@@ -167,15 +167,15 @@ This is the quality check: do it before relying on the recorder.
 ### Run the recorder on GitHub
 
 1. Repo secrets: `DISCORD_TOKEN`, `GROQ_API_KEY`, `WORKER_URL` and `WORKER_SHARED_SECRET`. The last two are how the
-   job fetches the channel settings made with `/setup-recording`, polls the stop flag and stores the transcript.
+   job fetches the channel settings made with `/recording`, polls the stop flag and stores the transcript.
    (`TEAM_CONFIG` is optional: see below.) Optional but recommended: `CLOUDFLARE_ACCOUNT_ID` and
    `CLOUDFLARE_API_TOKEN` (a token with **Workers AI** permission only), so the summary is written by Llama 3.3 on
    Cloudflare. Without them the job logs that Cloudflare is skipped and Groq writes the summary.
    Optional repository **variables** (Settings > Secrets and variables > Actions > Variables; they are public in a public
    repo, so put only names and numbers there): `ENGINE_ORDER`, `PARAKEET_BUDGET_MIN`, `SUMMARY_MODEL_ORDER`.
-2. **Tell the bot where each voice channel's transcript goes, in Discord, with `/setup-recording`** (see the next
+2. **Tell the bot which voice channels to record, and where transcripts go, in Discord, with `/recording`** (see the next
    section). The optional `TEAM_CONFIG` secret works as a fallback for runs you start by hand without a session
-   (the settings from `/setup-recording` win when both exist). It is JSON, keyed by voice channel ID:
+   (the settings from `/recording` win when both exist). It is JSON, keyed by voice channel ID:
 
    ```json
    {
@@ -244,7 +244,7 @@ on to Cloudflare for the summary. Groq Whisper is the fallback.
 
 ### Glossary: spellings of names and terms
 
-The glossary (set with `/setup-recording glossary:`, up to 500 characters) lists correct spellings, separated by commas.
+The glossary (set with `/recording voice-channel glossary:`, up to 500 characters) lists correct spellings, separated by commas.
 An entry may list known mishearings after `=`, separated by `|`:
 
 ```
@@ -296,7 +296,7 @@ different licence for its hosted service; the Hugging Face model card governs th
   placeholder when both fail.
 * **Summary and questions:** the Cloudflare and Groq clients, the fallback chain, the timestamp check, the Neuron meter and
   its caps, hybrid retrieval, the rate limits and the prompt-injection wrapping of excerpts.
-* **The Worker:** commands, setup and recording commands, `/transcript-settings`, the recorder API, share links, the share page
+* **The Worker:** commands, setup and recording commands (`/recording`), the recorder API, share links, the share page
   (escaping, CSP, contrast of the colours) and the `/admin` editing (including that the transcript never changes), against an
   in-memory D1 stand-in (`test/helpers/d1.js`). Migration `0012` is also tested for keeping existing setups.
 * **What gets sent where:** `test/delivery.test.js` runs `finishSession` with fakes for every save/post combination (order of
@@ -305,7 +305,7 @@ different licence for its hosted service; the Hugging Face model card governs th
 * **Google Calendar:** the token encryption, the sign-in link and callback (one-time state, replay, expiry, a missing refresh
   token, an unticked calendar box), refreshing access tokens and their retries, creating, changing and cancelling events against
   a fake Google Calendar API, the sync queue through both routes (Google sign-in and the Apps Script bridge), the lost-sign-in
-  path, the weekly keep-alive, `/calendar disconnect` and `/calendar status`, and that no token, code or secret reaches a log.
+  path, the weekly keep-alive, `/calendar` and its Disconnect button, and that no token, code or secret reaches a log.
 * **Scheduled auto-join:** `test/auto-record.test.js` (which links start a recording and which do nothing, the checks, not
   starting twice) and `test/voice-link.test.js` (what counts as a link).
 * **Prompts:** `test/prompts.test.js` pins every behaviour the shortened summary prompts must still ask for, including the relevance and tone rule (meeting content first; small talk and jokes left out unless the meeting itself is casual; formal, serious tone) and the notes format modelled on the owner's example notes: a title line, sections by topic or by person (with "Outstanding items"), then the fixed **Decisions**, **Action items** and **Open questions** sections the verifier checks. Two invented few-shot examples (a work meeting and a casual one) show it (about 1,000 extra tokens per final request; a meeting is summarised in one request only while prompt + transcript stay as large as a single request was before).
@@ -349,7 +349,7 @@ segments, none over 15 s, the last line at 239.2 of 240 s, the model loaded once
 10-minute recording on a real GitHub runner (15 times real time, 1.9 GB of memory); migrations `0001` to `0011` on a real local D1
 database; migrations `0014` and `0015` on the real D1 database; `npm run smoke` (27 checks against a local Worker); and, by
 hand against real Google and Discord, the Google sign-in, creating, moving and cancelling an event with a guest invited, the
-revoked-access path and `/calendar disconnect`. The weekly keep-alive on a real cron run is only partly confirmed.
+revoked-access path and the `/calendar` Disconnect button. The weekly keep-alive on a real cron run is only partly confirmed.
 
 Only a real run can show the rest.
 
@@ -369,7 +369,7 @@ bearer token) to call the Worker's recorder API:
 | Call | Used for |
 |------|----------|
 | `GET /api/sessions/<id>/stop` | Polled every 15 s: has someone asked it to stop? |
-| `GET /api/sessions/<id>/config` | Where this session's results go (its `/setup-recording`, `/transcript-settings` and named recording setup); 409 once the session has ended |
+| `GET /api/sessions/<id>/config` | Where this session's results go (its voice channel's `/recording voice-channel`, the server's save/post and its recording setup); 409 once the session has ended |
 | `POST /api/sessions/<id>/finish` | Tells the Worker the job ended (done or failed), freeing the channel |
 | `GET /api/ai-budget` | Whether today's shared Neuron budget still allows a Cloudflare summary |
 | `POST /api/transcripts` | Stores the finished transcript and returns the private link |
@@ -386,10 +386,10 @@ instead of your `wrangler login`, so commands such as `npm run db:migrate:remote
 
 | Command | What it does |
 |---------|--------------|
-| `/start-recording [channel]` | Records the voice channel you are in (or the one you pick). The Worker starts the GitHub job; the bot joins within about a minute. It uses the Default recording setup (below). The channel where you typed the command is remembered: that is where the transcript and summary go when nothing else is set (see `/transcript-settings`) |
+| `/start-recording [channel]` | Records the voice channel you are in (or the one you pick). The Worker starts the GitHub job; the bot joins within about a minute. It uses the Default recording setup (below). The channel where you typed the command is remembered: that is where the transcript and summary go when the Default setup names no private channel (see `/recording setup`) |
 | `/stop-recording [channel] [force]` | The bot leaves within about 15 seconds, then transcribes and posts as usual. Only the person who started it, or someone with Manage Server, can stop it. `force:True` clears a stuck recording |
 
-Anyone in the server can start a recording, but only in a voice channel an admin has set up (below). Otherwise
+Anyone in the server can start a recording, but only in a voice channel an admin has allowed with `/recording voice-channel` (below). Otherwise
 `/start-recording` says so right away.
 
 ### Scheduled meetings that record by themselves
@@ -401,7 +401,7 @@ the bot checks the meeting's **`location`**. If it is a link to a Discord voice 
 `<#channel>` mention, plain text) never records, and the normal "starting now" message is posted with nothing added.
 
 It also requires all of these: the link is for the meeting's own server; the channel is a voice channel the bot can see; the
-channel has a `/setup-recording`; nothing is already being recorded in this server (so the bot never joins a second call or
+channel is allowed with `/recording voice-channel`; nothing is already being recorded in this server (so the bot never joins a second call or
 rejoins one it is in). **The outcome is shown** in one line under the "starting now" message: `🔴 Recording: …` with the
 recording setup used, or `⚠️ Not recorded: …` with a fixed reason (never an error text). The `/new-meeting` reply already says
 whether the meeting will record, with which setup, and where its results will go.
@@ -411,97 +411,82 @@ twice, or retried because its message failed, finds that session and says "alrea
 job that is re-run after its session ended is refused by the Worker (HTTP 409) and exits without joining or posting.
 
 Who can schedule meetings, and so who can trigger a recording, is whatever you allow in Discord's command permissions; the
-`/setup-recording` gate still decides which voice channels can ever be recorded. The bot posts its usual notice in the voice
+`/recording voice-channel` gate still decides which voice channels can ever be recorded. The bot posts its usual notice in the voice
 channel when it joins. If it cannot Connect, or the channel is full, the recorder finds out only when it tries to join and the
 session ends as failed.
 
-### Named recording setups: `/recording setup`, where each kind of meeting's results go
+### Setting up recording: `/recording` (admins only, no GitHub secret to edit)
+
+Everything about recording is set with one admin command. It is hidden from people without Manage Server by default, and the
+handlers check the permission again. A server's settings are never visible to, or editable from, another server.
 
 | Command (needs Manage Server) | What it does |
 |---------|--------------|
-| `/recording setup name [private_channel] [summary_channel] [link_channel] [audio] [clear]` | Creates or changes a named setup. With only `name`, shows it |
-| `/recording list` | Shows every setup, the Default first |
-| `/recording delete name` | Deletes one. Meetings and presets that name it use the Default instead (and say so) |
+| `/recording voice-channel voice_channel [name] [backup_channel] [language] [glossary] [clear]` | Allows recording that voice channel and saves its transcript heading, audio backup channel, language and glossary. With only `voice_channel`, shows it. Run it again to change one option: the others are kept. `clear:backup_channel` / `clear:glossary` removes one |
+| `/recording setup name [private_channel] [summary_channel] [link_channel] [audio] [clear] [save] [post]` | Creates or changes a recording setup: where a recording's transcript, summary and "recording ready" link go. With only `name`, shows it. `save` and `post` are only accepted on `name:Default` and apply to the whole server (below) |
+| `/recording list` | Shows every recording setup (the Default first), the server's save/post switches, and every voice channel that may be recorded |
+| `/recording delete name` or `/recording delete voice_channel` | Deletes a recording setup (meetings and presets that name it use the Default instead, and say so), or stops a voice channel being recordable. Give exactly one |
+
+To add the bot to another server: invite the same bot, give it the permissions below, then run `/recording voice-channel` there.
+Nothing in GitHub changes. (Register the commands globally, with no `DISCORD_GUILD_ID`, so they show up in every server.)
+
+#### Which voice channels may be recorded: `/recording voice-channel`
+
+* `/start-recording` and scheduled meetings only record a voice channel allowed here. The setting also holds the name shown in the
+  transcript heading (default: the voice channel's name), the spoken language (`en`, `es`, `fr`, …; default `en`), the glossary
+  (up to 500 characters; helps the transcriber spell names and product terms) and an optional private **backup channel** for the
+  audio (also where a transcript file that could not be posted is rescued to).
+* **Checked when you save it.** A newly allowed voice channel is looked up (it must be a voice channel in this server that the bot
+  can see), and a new backup channel gets a real message. If that fails, nothing is saved and you are told which permissions are
+  missing.
+* It does **not** say where transcripts go: that is the recording setup's job (next section).
+* **Private.** The recorder fetches its settings from the Worker with the shared secret, so channel IDs, team names and
+  glossaries never appear in the public GitHub run page or log.
+* Up to 25 voice channels per server. You can delete the `TEAM_CONFIG` secret from GitHub once every channel you record is allowed
+  here.
+
+#### Where results go: `/recording setup`
+
+**Where transcripts go, in one line:** the recording setup's `private_channel`; if it has none, the Default setup's; if that has
+none either, the channel where `/start-recording` was typed (for a scheduled meeting: the meeting's own channel). So to send every
+transcript to one private channel, run `/recording setup name:Default private_channel:#transcripts`. Note that the start channel
+may be public: set the Default's private channel if transcripts must go somewhere private.
 
 | Destination | What goes there | Blank means |
 |---|---|---|
-| `private_channel` | The transcript file (and the audio files, with `audio:True`) | The Default setup's private channel, else the usual transcript channel (`/transcript-settings` below) |
+| `private_channel` | The transcript file (and the audio files, with `audio:True`) | The Default setup's private channel, else the channel where the recording was started |
 | `summary_channel` | The summary message with the link to the summary page | The Default's summary channel, else the same channel as the transcript |
 | `link_channel` | "The recording is ready" with a Discord link to the transcript message. Only people who can see the private channel can open it, so nothing private is posted here | The Default's link channel, else no link is posted |
 
-* **The Default setup** (`name:Default`) is used by every meeting that picks no setup, picks one that no longer exists, and by
-  `/start-recording`. Until you save it, it is built in with every channel blank, which is exactly the behaviour from before named
-  setups. Other setups take their blank channels from it, so a setup that only sets a summary channel still sends the transcript
-  to the Default's private channel.
+* **The Default setup** (`name:Default`) is used by `/start-recording`, by every meeting that picks no setup, and by meetings that
+  pick one that no longer exists. Until you save it, it is built in with every channel blank. Other setups take their blank
+  channels from it, so a setup that only sets a summary channel still sends the transcript to the Default's private channel.
 * **Picking one:** `/new-meeting … location:<voice channel link> recording_setup:<name>` (autocomplete lists setups only when the
   location is a Discord voice channel link; any other location with `recording_setup` is refused). Presets store one too
   (`/add-update-preset … recording_setup:<name>`), and `/update-meeting` can change it. A name that does not exist falls back to
   the Default with a warning in the reply; a setup deleted later falls back at the start, and the start message says so.
-* **Checked when you save it**, like `/setup-recording`: each new channel must be a text channel in this server that the bot can
-  see, and gets a real message (private first, the most public last). If one fails, nothing is saved. A private channel that does
-  not hide itself from @everyone is saved with a warning.
+* **Checked when you save it:** each new channel must be a text channel in this server that the bot can see, and gets a real
+  message (private first, the most public last). If one fails, nothing is saved. A private channel that does not hide itself from
+  @everyone is saved with a warning.
 * **Fixed per recording:** the channels are copied onto the recording session when it starts, so editing a setup mid-meeting does
   not move that meeting's transcript.
 * **Failures never leak private content.** A summary channel the bot cannot post in: the private channel says so and gets the
   summary. A link channel that fails is only logged. Audio only ever goes to a channel named as private (with `audio:True`), or to
-  the voice channel's backup channel as before. The transcript file never goes to the summary or link channel.
-* `/transcript-settings post:false` still wins over every named setup: nothing is posted in any channel.
+  the voice channel's backup channel. The transcript file never goes to the summary or link channel.
 * Up to 25 setups per server; names up to 50 characters.
 
 The summary link opens the summary page, which has a question box over the transcript. Anyone who can see the summary channel can
 therefore ask questions about the meeting. Pick a summary channel whose readers may know what was said.
 
-### Setting up a server: `/setup-recording` (no GitHub secret to edit)
-
-| Command (needs Manage Server) | What it does |
-|---------|--------------|
-| `/setup-recording voice_channel [transcript_channel] [name] [backup_channel] [language] [glossary]` | Allows recording that voice channel and saves its name, backup channel, language and glossary. `transcript_channel` is optional (see below). Run it again to change it |
-| `/recording-settings [voice_channel]` | Shows the saved setups for this server |
-| `/remove-recording-setup voice_channel` | Stops allowing recordings of that voice channel |
-
-To add the bot to another server: invite the same bot, give it the permissions below, then run `/setup-recording` there.
-Nothing in GitHub changes. (Register the commands globally, with no `DISCORD_GUILD_ID`, so they show up in every server.)
-
-* **Checked when you save it.** The bot looks up each channel, makes sure they are all in this server and of the right
-  kind, and posts a confirmation message in the transcript channel (if you gave one) and the backup channel. If it cannot see or post
-  there, nothing is saved and you are told which permissions are missing, so a mistake shows up now instead of in the
-  middle of a meeting.
-* **Admin only, twice.** The commands are hidden from people without Manage Server by default, and the handlers check
-  the permission again. A server's settings are never visible to, or editable from, another server.
-* **Private.** The recorder fetches its settings from the Worker with the shared secret, so channel IDs, team names and
-  glossaries never appear in the public GitHub run page or log.
-* Up to 25 setups per server. Languages are 2 or 3 letter codes (`en`, `es`, `fr`). The glossary (up to 500
-  characters) helps the transcriber spell names and product terms.
-* You can delete the `TEAM_CONFIG` secret from GitHub once every channel you record has a `/setup-recording`.
-
-One-time setup for `/start-recording`:
-
-1. GitHub > Settings > Developer settings > Fine-grained tokens > new token, limited to this one repository, with
-   **Actions: Read and write**. Then `npx wrangler secret put GITHUB_DISPATCH_TOKEN`.
-2. Check `GITHUB_REPO` (and `GITHUB_REF`, default `main`) in `wrangler.toml`.
-3. `npm run deploy`, then `npm run register`.
-
-Without the token the commands still exist and say recording is not set up. The recorder tells the Worker when its job
-ends (`POST /api/sessions/<id>/finish`), so an empty meeting or a crash frees the channel. Sessions that never report in
-are cleared automatically after 20 minutes (never started) or 6 hours (running).
-
-### What happens to a finished recording: `/transcript-settings`
-
-| Command (needs Manage Server) | What it does |
-|---------|--------------|
-| `/transcript-settings` | With no options: shows the current settings |
-| `/transcript-settings [save] [post] [destination] [clear_destination]` | Changes them. One setting per server |
+#### Save and post, for the whole server: `/recording setup name:Default save: post:`
 
 * **Save** (default on) keeps the transcript and summary in the database. That is what the private web page, its question box and
   the `/admin` editing use.
-* **Post** (default on) sends the transcript file and the summary into a Discord text channel.
-* **Destination** (optional) is the text channel to post in. With none set, results go to **the channel where
-  `/start-recording` was typed**. (A voice channel set up earlier with a `transcript_channel` keeps posting there unless you set
-  a destination: the order is destination, then that older setting, then the start channel. For a scheduled meeting that starts
-  recording by itself, the "start channel" is the meeting's own channel.) A new destination is tested with a real message first.
-  Note that the start channel may be a public channel: set a destination if transcripts must go somewhere private.
-* **Save off, post on:** the transcript and the **whole** summary are posted in the channel (over several messages if needed).
-  There is no web page, question box or link.
+* **Post** (default on) sends the transcript file and the summary into the channels the recording setup names. Off wins over
+  every recording setup: nothing is posted in any channel.
+* These two are per server, so they are only accepted on the Default setup; any other setup refuses them.
+* **Save off, post on:** the transcript and the **whole** summary are posted (over several messages if needed). There is no web
+  page, question box or link.
 * **Post off, save on:** nothing is posted in any channel. The summary and its web link are sent in a **private message to the
   person who started the recording**. (Discord only allows an ephemeral reply for 15 minutes after a command, and a recording
   finishes later, so a private message is used.) It fails quietly if that person does not accept messages from the bot, and a
@@ -511,6 +496,22 @@ are cleared automatically after 20 minutes (never started) or 6 hours (running).
   transcript is still saved, and the file is sent privately to the person who started the recording, or else put in the backup
   channel; the channel is told which. The job log warns at the start when the bot may not Attach Files there. Only when the file
   can be kept nowhere at all (not posted, not saved, not sent) is the run marked failed.
+
+**Upgrading from the older commands** (migration `0017`): `/setup-recording`, `/recording-settings`, `/remove-recording-setup`
+and `/transcript-settings` are gone. A server's old `/transcript-settings destination` became its Default setup's private channel
+(unless the Default already had one, which already won). The old per-voice-channel `transcript_channel` is no longer used: those
+recordings now follow the Default setup. Recordings running during the upgrade keep the channel they started with.
+
+#### One-time setup for `/start-recording`
+
+1. GitHub > Settings > Developer settings > Fine-grained tokens > new token, limited to this one repository, with
+   **Actions: Read and write**. Then `npx wrangler secret put GITHUB_DISPATCH_TOKEN`.
+2. Check `GITHUB_REPO` (and `GITHUB_REF`, default `main`) in `wrangler.toml`.
+3. `npm run deploy`, then `npm run register`.
+
+Without the token the commands still exist and say recording is not set up. The recorder tells the Worker when its job
+ends (`POST /api/sessions/<id>/finish`), so an empty meeting or a crash frees the channel. Sessions that never report in
+are cleared automatically after 20 minutes (never started) or 6 hours (running).
 
 ### The home page and bot status: `/`
 
@@ -525,11 +526,11 @@ private and not indexed, and `POST /` is still Discord's command endpoint.
 
 ### Google Calendar sync: sign in with Google
 
-Each project manager (PM) connects **their own** Google account once with `/calendar connect`. The bot keeps one encrypted refresh
+Each project manager (PM) connects **their own** Google account once: `/calendar`, then the **Connect** button. The bot keeps one encrypted refresh
 token per PM and acts on that PM's primary calendar. `/new-meeting`, `/update-meeting` and `/cancel-meeting` then create, move and
 delete the Google event (guests get Google's invite, update and cancellation emails; a Google Meet link is made unless you pass
 `meet:false`). The older Apps Script bridge (`Code.gs`, `BRIDGE_SECRET`) still works for anyone who connected it with
-`/calendar connect url:...`; a meeting stays on whichever route it was first put on a calendar through.
+`/calendar url:...`; a meeting stays on whichever route it was first put on a calendar through.
 
 **What it does and does not do**
 
@@ -549,10 +550,12 @@ delete the Google event (guests get Google's invite, update and cancellation ema
   wiped, they get a DM with a fresh sign-in link, and the meeting's channel gets an "Add to Google Calendar" link (title, time,
   location, no email addresses) so the meeting still reaches calendars. The PM's own message also has a link that includes the
   guests. After reconnecting, change the meeting (for example set its location again) to sync it.
-- `/calendar disconnect` revokes the token at Google (the app disappears from myaccount.google.com/permissions), deletes the
+- `/calendar` (no subcommands) shows privately whether you are connected, with the Google account, plus the buttons that fit:
+  **Connect** (or **Reconnect**), **Disconnect Google**, **Disconnect Apps Script**. Connect makes a fresh one-time sign-in link
+  when you click it (so an old message never holds an expired link) and shows it as a "Sign in with Google" button.
+- **Disconnect Google** revokes the token at Google (the app disappears from myaccount.google.com/permissions), deletes the
   stored row, and flags the PM's meetings so they stop syncing; events already in the calendar are left alone. If Google cannot
-  be reached nothing is deleted and the PM is asked to try again. `/calendar status` shows connected or disconnected and the
-  Google account.
+  be reached nothing is deleted and the PM is asked to try again.
 - Tokens, codes, the client secret and the key are never logged, never put in an error message and never shown in a reply
   (tests fail if one ever reaches a log).
 
@@ -584,13 +587,14 @@ longer be read, and each PM has to disconnect and connect again.
 ```
 npm run db:migrate:remote   # applies any new migrations (the Google sign-in needs 0014 and 0015)
 npm run deploy
-npm run register            # registers the slash commands (/calendar connect takes an optional url)
+npm run register            # registers the slash commands (/calendar takes an optional url for Apps Script)
 ```
 
 **Manual verification checklist** (use a spare Gmail as the PM and a second account as the guest; each step names what you should see)
 
-1. `/calendar connect`: a private reply with a Google link. Click it, choose Advanced > Go to ... (unsafe), leave every box ticked.
-   You see a "Connected" page and get a DM. Running `/calendar connect` again says you are already connected.
+1. `/calendar`: a private reply saying you are not connected, with a **Connect** button. Press it: the message becomes a
+   **Sign in with Google** button. Click it, choose Advanced > Go to ... (unsafe), leave every box ticked. You see a "Connected"
+   page and get a DM. Running `/calendar` again shows you connected, with a **Disconnect Google** button and no Connect button.
 2. In D1 the row is there and the token is unreadable:
    `npx wrangler d1 execute vc-bot --remote --command "SELECT discord_user_id, team_id, google_email, status, substr(encrypted_refresh_token,1,12) AS ciphertext_start FROM calendar_connections"`.
 3. `/add-team team:Design emails:<guest>`, then `/new-meeting name:Calendar test date:<tomorrow> time:3pm team:Design`. Within about a
@@ -605,9 +609,9 @@ npm run register            # registers the slash commands (/calendar connect ta
 9. Keep-alive: `npx wrangler dev --test-scheduled`, then `curl "http://localhost:8787/cdn-cgi/local/scheduled?cron=0+6+*+*+1"` prints
    a `calendar keep-alive: done ...` line (a local database has no PMs, so `checked=0`). For a real PM line, temporarily set the
    second cron in `wrangler.toml` to a time a few minutes ahead, `npm run deploy`, watch `npx wrangler tail`, then set it back.
-10. `/calendar status` shows connected and the account. `/calendar disconnect` says it revoked access; the app is gone from the
-    permissions page, the D1 row is gone, `/calendar status` says not connected, and `/upcoming-meetings` marks the meetings that
-    no longer sync.
+10. `/calendar` shows connected and the account. **Disconnect Google** says it revoked access and the buttons disappear; the app is
+    gone from the permissions page, the D1 row is gone, `/calendar` says not connected, and `/upcoming-meetings` marks the meetings
+    that no longer sync.
 
 ### Private web links for transcripts
 
@@ -646,10 +650,10 @@ Settings in `wrangler.toml`: `SHARE_LINK_DAYS` (default 30; `0` turns the automa
 **Privacy policy: `/privacy`.** The Worker serves a public privacy page at `https://<your worker>/privacy` (source:
 `src/privacy-page.js`). It is written from what the code does, and tests tie its main claims to the code (for example, the
 Google sign-in table holds exactly the listed columns, the refresh token is only stored encrypted, the Calendar API is only used on
-the bot's own events by id, and `/calendar disconnect` revokes at Google before it deletes). Things it says that you might not
+the bot's own events by id, and the Disconnect Google button revokes at Google before it deletes). Things it says that you might not
 expect: the bot **does** store a Google refresh token for each PM who signs in (encrypted, with the key kept in a Worker secret), a
 link in the meeting's channel never contains guest email addresses (the private message to the PM can), and for the older Apps
-Script option the bot stores **no** Google token and `/calendar disconnect` does **not** revoke the script's access at Google.
+Script option the bot stores **no** Google token and its Disconnect button does **not** revoke the script's access at Google.
 Neither disconnect deletes events already created. Set the contact address it shows for
 deletion requests with the **secret** `PRIVACY_CONTACT_EMAIL` (`npx wrangler secret put PRIVACY_CONTACT_EMAIL`, so it is not
 committed to the repository; it is still shown on the page). Without it, the page tells people to ask the person who runs

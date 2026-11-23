@@ -177,7 +177,7 @@ test('a PM who never connected anything behaves as before: the meeting is made, 
   const t = setup();
   await t.run(cmd('set-timezone', { timezone: 'America/Chicago' }));
   const r = await newMeeting(t);
-  assert.match(r.data.content, /Run \/calendar connect first/);
+  assert.match(r.data.content, /Run \/calendar and press Connect first/);
   assert.equal(meetingRow(t).gcal_event_id, null);
   assert.equal(t.fake.calls.length, 0);
 });
@@ -342,7 +342,7 @@ test('two meetings queued when access is revoked: the PM is messaged once, and e
 
   // A meeting made after the disconnect is simply not added to a calendar (with a hint), rather than failing later.
   const r = await newMeeting(t, { name: 'Third' });
-  assert.match(r.data.content, /Run \/calendar connect first/);
+  assert.match(r.data.content, /Run \/calendar and press Connect first/);
   assert.equal(t.db.sql("SELECT gcal_event_id FROM meetings WHERE name = 'Third'")[0].gcal_event_id, null);
 });
 
@@ -365,7 +365,7 @@ test('if nobody can be told privately, the channel says the organizer must recon
   await newMeeting(t);
   await t.sync(NOW + 20 * 60); // the 15 minute window for a private reply has passed
   const post = t.discord.posts.at(-1);
-  assert.match(post.content, /needs to reconnect with `\/calendar connect`/);
+  assert.match(post.content, /needs to reconnect with `\/calendar`\./);
   assert.equal((await getConnection(t.db, 'u1')).status, 'disconnected');
 });
 

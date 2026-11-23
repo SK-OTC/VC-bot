@@ -1,9 +1,9 @@
 // Small helpers shared by the command handlers.
 import { MessageFlags, ResponseType } from './discord.js';
 
-export const reply = (content, { ephemeral = false, allowedMentions = { parse: [] } } = {}) => ({
+export const reply = (content, { ephemeral = false, allowedMentions = { parse: [] }, components } = {}) => ({
   type: ResponseType.MESSAGE,
-  data: { content, flags: ephemeral ? MessageFlags.EPHEMERAL : 0, allowed_mentions: allowedMentions },
+  data: { content, flags: ephemeral ? MessageFlags.EPHEMERAL : 0, allowed_mentions: allowedMentions, ...(components ? { components } : {}) },
 });
 
 /** An error only the person who ran the command sees. Always say what went wrong and why. */

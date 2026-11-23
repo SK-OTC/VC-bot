@@ -16,10 +16,10 @@ export const RETRY_BACKOFF_MS = 1000;
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const MESSAGES = {
-  not_connected: 'Your Google Calendar is not connected. Run `/calendar connect`.',
+  not_connected: 'Your Google Calendar is not connected. Run `/calendar`.',
   wrong_team: 'Your Google Calendar was connected in a different server, so it is not used for this one.',
-  decrypt: 'The saved Google sign-in could not be read (the bot\'s encryption key may have changed). Reconnect with `/calendar connect`.',
-  invalid_grant: 'Google no longer accepts your saved sign-in (it was revoked or has expired). Reconnect with `/calendar connect`.',
+  decrypt: 'The saved Google sign-in could not be read (the bot\'s encryption key may have changed). Reconnect with `/calendar`.',
+  invalid_grant: 'Google no longer accepts your saved sign-in (it was revoked or has expired). Reconnect with `/calendar`.',
   config: 'Google refused the bot\'s own settings (GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET). Tell the server admin.',
 };
 

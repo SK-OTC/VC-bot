@@ -100,7 +100,7 @@ export async function endSession(db, id, status, error, nowSec) {
     .run();
 }
 
-// ---------- recording setups (/setup-recording) ----------
+// ---------- voice channels allowed to be recorded (/recording voice-channel) ----------
 
 export const MAX_SETUPS_PER_GUILD = 25;
 
@@ -122,73 +122,71 @@ export async function countRecordingSetups(db, guildId) {
 /**
  * Creates or replaces the setup for a voice channel. A voice channel belongs to one server, so an existing row is only
  * ever replaced by the same server: { ok: false } when another server already holds that channel id.
+ * The old transcript_channel_id column is no longer written or read (transcripts follow the recording setup instead).
  */
 export async function saveRecordingSetup(db, s, nowSec) {
   const existing = await db.prepare('SELECT guild_id, created_by, created_at FROM recording_setups WHERE voice_channel_id = ?').bind(s.voiceChannelId).first();
   if (existing && existing.guild_id !== s.guildId) return { ok: false };
   await db
     .prepare(
-      `INSERT INTO recording_setups (voice_channel_id, guild_id, name, transcript_channel_id, backup_channel_id, glossary, language, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (voice_channel_id) DO UPDATE SET name = excluded.name, transcript_channel_id = excluded.transcript_channel_id,
+      `INSERT INTO recording_setups (voice_channel_id, guild_id, name, backup_channel_id, glossary, language, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (voice_channel_id) DO UPDATE SET name = excluded.name,
          backup_channel_id = excluded.backup_channel_id, glossary = excluded.glossary, language = excluded.language, updated_at = excluded.updated_at`,
     )
-    .bind(s.voiceChannelId, s.guildId, s.name, s.transcriptChannelId ?? null, s.backupChannelId ?? null, s.glossary ?? '', s.language ?? 'en', s.createdBy, existing?.created_at ?? nowSec, nowSec)
+    .bind(s.voiceChannelId, s.guildId, s.name, s.backupChannelId ?? null, s.glossary ?? '', s.language ?? 'en', s.createdBy, existing?.created_at ?? nowSec, nowSec)
     .run();
   return { ok: true, updated: Boolean(existing) };
 }
 
-// ---------- transcript settings (/transcript-settings) ----------
+// ---------- save / post, per server (/recording setup name:Default save: post:) ----------
 
-export const DEFAULT_TRANSCRIPT_SETTINGS = { save: true, post: true, destination: null, custom: false };
+export const DEFAULT_TRANSCRIPT_SETTINGS = { save: true, post: true, custom: false };
 
-/** The server's settings, or the defaults (save on, post on, post where the recording was started). */
+/**
+ * The server's settings, or the defaults (save on, post on). Where things are posted is the recording setup's business; the old
+ * destination_channel_id column was moved into the Default setup's private channel (migration 0017) and is no longer read.
+ */
 export async function getTranscriptSettings(db, guildId) {
-  const row = await db.prepare('SELECT save, post, destination_channel_id FROM transcript_settings WHERE guild_id = ?').bind(guildId).first();
+  const row = await db.prepare('SELECT save, post FROM transcript_settings WHERE guild_id = ?').bind(guildId).first();
   if (!row) return { ...DEFAULT_TRANSCRIPT_SETTINGS };
-  return { save: row.save === 1, post: row.post === 1, destination: row.destination_channel_id ?? null, custom: true };
+  return { save: row.save === 1, post: row.post === 1, custom: true };
 }
 
 export async function saveTranscriptSettings(db, guildId, s, userId, nowSec) {
   await db
     .prepare(
-      `INSERT INTO transcript_settings (guild_id, save, post, destination_channel_id, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT (guild_id) DO UPDATE SET save = excluded.save, post = excluded.post, destination_channel_id = excluded.destination_channel_id,
+      `INSERT INTO transcript_settings (guild_id, save, post, destination_channel_id, updated_by, updated_at) VALUES (?, ?, ?, NULL, ?, ?)
+       ON CONFLICT (guild_id) DO UPDATE SET save = excluded.save, post = excluded.post, destination_channel_id = NULL,
          updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
     )
-    .bind(guildId, s.save ? 1 : 0, s.post ? 1 : 0, s.destination ?? null, String(userId), nowSec)
+    .bind(guildId, s.save ? 1 : 0, s.post ? 1 : 0, String(userId), nowSec)
     .run();
 }
 
 /**
- * Where a recording's results go. Pure: the setting, the voice channel's setup and the session decide.
- *   post off                  -> nothing is posted to a channel
- *   post on, a destination    -> that channel (set with /transcript-settings)
- *   post on, no destination   -> the transcript channel of the voice channel's /setup-recording if it has one (older setups),
- *                                otherwise the channel where the recording was started
+ * Where a recording's results go when its recording setup names no private channel. Pure.
+ *   post off  -> nothing is posted to a channel
+ *   post on   -> the channel where the recording was started (for a scheduled meeting: the meeting's channel)
  */
-export function resolveTranscriptTarget({ settings, setup, session }) {
+export function resolveTranscriptTarget({ settings, session }) {
   const post = settings.post;
-  return {
-    save: settings.save,
-    post,
-    channelId: post ? settings.destination || setup?.transcript_channel_id || session?.start_channel_id || null : null,
-  };
+  return { save: settings.save, post, channelId: post ? session?.start_channel_id || null : null };
 }
 
 /**
- * Every destination of one recording. Pure: the server's /transcript-settings, the voice channel's /setup-recording and the session
- * (which carries the named setup's channels, fixed when it started) decide.
- *   private  the transcript file: the named setup's private channel, else where it went before (resolveTranscriptTarget)
+ * Every destination of one recording. Pure: the server's save/post, the voice channel's setup (its backup channel) and the session
+ * (which carries the recording setup's channels, fixed when it started) decide.
+ *   private  the transcript file: the recording setup's private channel, else the channel where the recording was started
  *   summary  the summary message and its link: the named setup's summary channel, else the private channel (as before: one channel)
  *   link     the "recording is ready" message: only when the named setup names a link channel that is not the private channel itself
  *   audio    the audio files: the named setup's private channel when its audio is on, else the voice channel's backup channel
  *   backup   the voice channel's backup channel (where a transcript file that could not be posted is rescued to)
- * With posting off (/transcript-settings post:false) no channel gets the transcript, summary or link: that server-wide choice wins
+ * With posting off (/recording setup name:Default post:False) no channel gets the transcript, summary or link: that server-wide choice wins
  * over every named setup. Nothing here ever moves private content to a channel that was not named for it.
  */
 export function resolveRouting({ settings, setup, session }) {
-  const base = resolveTranscriptTarget({ settings, setup, session });
+  const base = resolveTranscriptTarget({ settings, session });
   const s = session ?? {};
   const privateId = base.post ? s.private_channel_id || base.channelId : null;
   const summaryId = base.post ? s.summary_channel_id || privateId : null;

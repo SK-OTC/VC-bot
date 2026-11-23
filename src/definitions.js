@@ -50,11 +50,9 @@ const pingOptions = PING_OPTION_NAMES.map((name, i) =>
 );
 
 // Every command is top-level, so each shows up on its own in Discord's slash menu.
-// Only /calendar (connect, disconnect, status) and /recording (setup, list, delete) have subcommands.
-const guestEmails = opt(T.STRING, 'emails', 'One or many email addresses, separated by commas, semicolons or spaces', {
-  required: true,
-  max_length: 6000,
-});
+// Only /recording (setup, voice-channel, list, delete) has subcommands.
+const emailsText = 'One or many email addresses, separated by commas, semicolons or spaces';
+const guestEmails = opt(T.STRING, 'emails', emailsText, { required: true, max_length: 6000 });
 const teamRequired = opt(T.STRING, 'team', 'Team name', { required: true, max_length: 50, autocomplete: true });
 
 export const COMMANDS = [
@@ -155,10 +153,15 @@ export const COMMANDS = [
     options: [teamRequired, guestEmails],
   },
   {
+    // Give either emails (remove those people) or all:True (delete the whole team); the handler refuses neither and both.
     name: 'remove-team-member',
-    description: 'Remove email addresses from a guest team',
+    description: 'Remove email addresses from a guest team, or delete the whole team (all:True)',
     contexts: [0],
-    options: [teamRequired, guestEmails],
+    options: [
+      teamRequired,
+      opt(T.STRING, 'emails', `${emailsText} (or use all:True)`, { max_length: 6000 }),
+      opt(T.BOOLEAN, 'all', 'Delete the whole team and every address on it'),
+    ],
   },
   {
     name: 'show-teams',
@@ -167,63 +170,24 @@ export const COMMANDS = [
     options: [opt(T.STRING, 'team', 'Team name (leave out to list your teams)', { max_length: 50, autocomplete: true })],
   },
   {
-    name: 'delete-team',
-    description: 'Delete a guest team and its addresses',
-    contexts: [0],
-    options: [teamRequired],
-  },
-  {
+    // No subcommands: it shows whether you are connected, with a Connect or Disconnect button (see cmdCalendar).
     name: 'calendar',
-    description: 'Connect your Google Calendar so meetings you schedule are added to it',
+    description: 'See whether your Google Calendar is connected, and connect or disconnect it',
     contexts: [0],
-    options: [
-      opt(T.SUB_COMMAND, 'connect', 'Connect your Google Calendar (sign in with Google)', {
-        options: [opt(T.STRING, 'url', 'Only if you use the older Apps Script bridge: your web app URL (ends in /exec)', { max_length: 300 })],
-      }),
-      opt(T.SUB_COMMAND, 'disconnect', 'Disconnect your Google Calendar'),
-      opt(T.SUB_COMMAND, 'status', 'Show whether your Google Calendar is connected'),
-    ],
+    options: [opt(T.STRING, 'url', 'Only if you use the older Apps Script bridge: your web app URL (ends in /exec)', { max_length: 300 })],
   },
   {
-    // Only people with Manage Server see these three by default (server admins can change that in Discord's settings);
-    // the handlers check the permission again, so hiding the command is a convenience, not the protection.
-    name: 'setup-recording',
-    description: 'Choose where a voice channel\'s transcript and summary are posted (admins only)',
-    contexts: [0],
-    default_member_permissions: MANAGE_SERVER,
-    options: [
-      opt(T.CHANNEL, 'voice_channel', 'The voice channel to record', { required: true, channel_types: VOICE_ONLY }),
-      opt(T.CHANNEL, 'transcript_channel', 'Optional text channel for the transcript and summary (default: where the recording is started)', { channel_types: TEXT_ONLY }),
-      opt(T.STRING, 'name', 'Team or meeting name shown in the transcript heading (default: the voice channel name)', { max_length: 50 }),
-      opt(T.CHANNEL, 'backup_channel', 'Optional private text channel for the audio backup', { channel_types: TEXT_ONLY }),
-      opt(T.STRING, 'language', 'Spoken language, a 2-letter code such as en, es, fr (default: en)', { max_length: 3 }),
-      opt(T.STRING, 'glossary', 'Correct spellings, comma-separated. Add mishearings with =, e.g. LiteCut=Lite Cut|Lite cut', { max_length: 500 }),
-    ],
-  },
-  {
-    name: 'recording-settings',
-    description: 'Show where each voice channel\'s transcript is posted (admins only)',
-    contexts: [0],
-    default_member_permissions: MANAGE_SERVER,
-    options: [opt(T.CHANNEL, 'voice_channel', 'Show just this voice channel (leave out to list all)', { channel_types: VOICE_ONLY })],
-  },
-  {
-    name: 'remove-recording-setup',
-    description: 'Stop allowing recordings of a voice channel (admins only)',
-    contexts: [0],
-    default_member_permissions: MANAGE_SERVER,
-    options: [opt(T.CHANNEL, 'voice_channel', 'The voice channel to remove', { required: true, channel_types: VOICE_ONLY })],
-  },
-  {
-    // Named recording setups. Admin only, like /setup-recording (the handler checks the permission again).
+    // Admin only: only people with Manage Server see it by default (server admins can change that in Discord's settings). The
+    // handlers check the permission again, so hiding the command is a convenience, not the protection. Discord applies this to the
+    // whole command, which is why /start-recording and /stop-recording (for everyone) are not subcommands of it.
     name: 'recording',
-    description: 'Named recording setups: where transcripts, summaries and recording links go (admins only)',
+    description: 'Recording setups and which voice channels may be recorded (admins only)',
     contexts: [0],
     default_member_permissions: MANAGE_SERVER,
     options: [
-      opt(T.SUB_COMMAND, 'setup', 'Create or change a named recording setup (just the name = show it)', {
+      opt(T.SUB_COMMAND, 'setup', 'Create or change a recording setup: where transcripts and summaries go (just the name = show it)', {
         options: [
-          opt(T.STRING, 'name', 'Setup name. "Default" is used by meetings that pick none', { required: true, max_length: 50, autocomplete: true }),
+          opt(T.STRING, 'name', 'Setup name. "Default" is used by /start-recording and by meetings that pick none', { required: true, max_length: 50, autocomplete: true }),
           opt(T.CHANNEL, 'private_channel', 'Private text channel for the transcript file (and the audio, if on)', { channel_types: TEXT_ONLY }),
           opt(T.CHANNEL, 'summary_channel', 'Text channel for the summary and its link (default: with the transcript)', { channel_types: TEXT_ONLY }),
           opt(T.CHANNEL, 'link_channel', 'Text channel for a "recording ready" link to the transcript (default: none)', { channel_types: TEXT_ONLY }),
@@ -236,11 +200,31 @@ export const COMMANDS = [
               { name: 'all channels', value: 'all' },
             ],
           }),
+          opt(T.BOOLEAN, 'save', 'Default only, whole server: keep transcripts and summaries, with a private web page (default: on)'),
+          opt(T.BOOLEAN, 'post', 'Default only, whole server: post transcripts and summaries in channels (default: on)'),
         ],
       }),
-      opt(T.SUB_COMMAND, 'list', 'Show every named recording setup'),
-      opt(T.SUB_COMMAND, 'delete', 'Delete a recording setup (meetings that use it fall back to Default)', {
-        options: [opt(T.STRING, 'name', 'Which setup', { required: true, max_length: 50, autocomplete: true })],
+      opt(T.SUB_COMMAND, 'voice-channel', 'Allow a voice channel to be recorded, or change it (just the channel = show it)', {
+        options: [
+          opt(T.CHANNEL, 'voice_channel', 'The voice channel', { required: true, channel_types: VOICE_ONLY }),
+          opt(T.STRING, 'name', 'Team or meeting name shown in the transcript heading (default: the voice channel name)', { max_length: 50 }),
+          opt(T.CHANNEL, 'backup_channel', 'Optional private text channel for the audio backup', { channel_types: TEXT_ONLY }),
+          opt(T.STRING, 'language', 'Spoken language, a 2-letter code such as en, es, fr (default: en)', { max_length: 3 }),
+          opt(T.STRING, 'glossary', 'Correct spellings, comma-separated. Add mishearings with =, e.g. LiteCut=Lite Cut|Lite cut', { max_length: 500 }),
+          opt(T.STRING, 'clear', 'Remove a setting', {
+            choices: [
+              { name: 'backup_channel', value: 'backup_channel' },
+              { name: 'glossary', value: 'glossary' },
+            ],
+          }),
+        ],
+      }),
+      opt(T.SUB_COMMAND, 'list', 'Show every recording setup and every voice channel that may be recorded'),
+      opt(T.SUB_COMMAND, 'delete', 'Delete a recording setup (name), or stop a voice channel being recordable (voice_channel)', {
+        options: [
+          opt(T.STRING, 'name', 'Recording setup to delete (meetings that use it fall back to Default)', { max_length: 50, autocomplete: true }),
+          opt(T.CHANNEL, 'voice_channel', 'Voice channel that may no longer be recorded', { channel_types: VOICE_ONLY }),
+        ],
       }),
     ],
   },
@@ -259,19 +243,6 @@ export const COMMANDS = [
     options: [
       opt(T.CHANNEL, 'channel', 'Which voice channel (only needed if more than one is being recorded)', { channel_types: VOICE_ONLY }),
       opt(T.BOOLEAN, 'force', 'Clear a stuck recording that will not stop (the bot may need to be removed by hand)'),
-    ],
-  },
-  {
-    // Admin only, like /setup-recording (the handler checks the permission again).
-    name: 'transcript-settings',
-    description: 'Choose whether recordings are saved and/or posted, and where (admins only; no options = show)',
-    contexts: [0],
-    default_member_permissions: MANAGE_SERVER,
-    options: [
-      opt(T.BOOLEAN, 'save', 'Keep the transcript and summary in the database, with a private web link (default: on)'),
-      opt(T.BOOLEAN, 'post', 'Post the transcript and summary in a channel (default: on)'),
-      opt(T.CHANNEL, 'destination', 'Text channel to post in (default: the channel where the recording was started)', { channel_types: TEXT_ONLY }),
-      opt(T.BOOLEAN, 'clear_destination', 'Go back to posting where the recording was started'),
     ],
   },
   {

@@ -22,10 +22,10 @@ function fakeRecorder(result = { ok: true }) {
 
 function setup({ recorder = fakeRecorder(), voice = { [ALICE]: VC1 }, withDefer = false } = {}) {
   const db = createTestDb();
-  // /start-recording only records voice channels an admin has set up with /setup-recording
+  // /start-recording only records voice channels an admin has allowed with /recording voice-channel
   for (const vc of [VC1, VC2]) {
     db.sql(
-      `INSERT INTO recording_setups (voice_channel_id, guild_id, name, transcript_channel_id, created_by, created_at, updated_at) VALUES ('${vc}', '${GUILD}', 'Team', '333333333333333333', 'admin', ${NOW}, ${NOW})`,
+      `INSERT INTO recording_setups (voice_channel_id, guild_id, name, created_by, created_at, updated_at) VALUES ('${vc}', '${GUILD}', 'Team', 'admin', ${NOW}, ${NOW})`,
     );
   }
   const discord = createFakeDiscord([], { voice });

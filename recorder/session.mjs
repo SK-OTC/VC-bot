@@ -47,7 +47,7 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
 
     if (stats.transcribedBatches === 0 && stats.batches > 0) notes.push('Nothing could be transcribed.');
 
-    // What the server chose with /transcript-settings: SAVE (database + private web page) and POST (a channel). Both default on.
+    // What the server chose with /recording setup name:Default: SAVE (database + private web page) and POST (a channel). Both default on.
     // Saving and posting both off is refused when the settings are read, so at least one of them is on here.
     const post = cfg.team.post !== false;
     const wantSave = cfg.team.save !== false;

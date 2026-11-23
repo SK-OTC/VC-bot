@@ -65,7 +65,7 @@ test('the channel notice has no email address and no mention, and says who has b
   assert.match(told, /not added to the organizer's calendar/);
   assert.match(told, /sent a link to reconnect/);
   assert.match(notTold, /not updated on the organizer's calendar/);
-  assert.match(notTold, /needs to reconnect with `\/calendar connect`/);
+  assert.match(notTold, /needs to reconnect with `\/calendar`\./);
   for (const text of [told, notTold]) assert.ok(!/@/.test(text));
 });
 
@@ -99,6 +99,6 @@ test('disconnectAndNotify: wipes the token and DMs a fresh link once; without si
   await saveRefreshToken({ db, encKey, discordUserId: 'u2', teamId: 'g1', googleEmail: 'two@gmail.com', refreshToken: 'fake-token-2', nowSec: NOW });
   const bare = await disconnectAndNotify({ db, discord, signIn: null, userId: 'u2', teamId: 'g1', nowSec: NOW + 7 });
   assert.equal(bare.dmSent, true);
-  assert.match(discord.dms.at(-1).content, /run `\/calendar connect`|Reconnect by running `\/calendar connect`/);
+  assert.match(discord.dms.at(-1).content, /Reconnect by running `\/calendar` in your server\./);
   assert.ok(!discord.dms.at(-1).content.includes('accounts.google.com'));
 });

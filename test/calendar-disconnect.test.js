@@ -1,4 +1,4 @@
-// /calendar disconnect and /calendar status for a Google sign-in, end to end through the real commands.
+// /calendar (status, with its buttons) and the Disconnect Google button for a Google sign-in, end to end through the real commands.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
@@ -48,7 +48,22 @@ const cmd = (name, opts = {}, { user = 'u1', guild = 'g1', sub = null } = {}) =>
   member: { user: { id: user }, permissions: '0' },
   data: { name, options: sub ? [{ type: 1, name: sub, options: toOptions(opts) }] : toOptions(opts) },
 });
-const calendar = (sub, who, opts) => cmd('calendar', opts, { ...who, sub });
+// /calendar has no subcommands: calendar('status') is the plain command, every other action is a click on one of its buttons.
+const BUTTONS = { connect: 'calendar:connect', disconnect: 'calendar:disconnect-google', 'disconnect-bridge': 'calendar:disconnect-bridge' };
+function calendar(action, { user = 'u1', guild = 'g1' } = {}, opts = {}) {
+  if (action === 'status') return cmd('calendar', opts, { user, guild });
+  return {
+    type: 3,
+    guild_id: guild,
+    channel_id: 'c1',
+    application_id: 'app1',
+    token: `tok-${user}-${Math.random()}`,
+    member: { user: { id: user }, permissions: '0' },
+    data: { custom_id: BUTTONS[action], component_type: 2 },
+  };
+}
+const buttonsOf = (r) => (r.data.components ?? []).flatMap((row) => row.components ?? []);
+const labels = (r) => buttonsOf(r).map((b) => b.label);
 const newMeeting = (t, opts = {}, who) => t.run(cmd('new-meeting', { name: 'Team Sync', date: '2026-11-25', time: '3pm', ...opts }, who));
 const text = (r) => r.data.content;
 
@@ -80,7 +95,8 @@ test('disconnect: the token is revoked at Google, the row and any sign-in links 
   t.db.sql("INSERT INTO calendar_connect_codes (code, discord_user_id, team_id, expires_at, used) VALUES ('hash', 'u1', 'g1', 9999999999, 0) RETURNING *");
 
   const r = await t.run(calendar('disconnect'));
-  assert.equal(r.data.flags, 64);
+  assert.equal(r.type, 7, 'the private /calendar message the button is on is replaced');
+  assert.deepEqual(r.data.components, [], 'and its buttons are removed');
   assert.match(text(r), /Disconnected your Google account \*\*u1@gmail\.com\*\*/);
   assert.match(text(r), /revoked the bot's access at Google/);
   assert.match(text(r), /myaccount\.google\.com\/permissions/);
@@ -116,9 +132,12 @@ test('after disconnecting: status says so, and the PM can connect again', async 
   const t = setup();
   await pmWithMeeting(t);
   await t.run(calendar('disconnect'));
-  assert.match(text(await t.run(calendar('status'))), /not connected/);
+  const status = await t.run(calendar('status'));
+  assert.match(text(status), /not connected/);
+  assert.deepEqual(labels(status), ['Connect']);
   const again = await t.run(calendar('connect'));
-  assert.match(text(again), /accounts\.google\.com/);
+  assert.equal(again.type, 7);
+  assert.match(buttonsOf(again)[0].url, /^https:\/\/accounts\.google\.com\//);
   assert.match(text(await t.run(calendar('disconnect'))), /nothing to disconnect/);
 });
 
@@ -203,11 +222,12 @@ test('with both a Google sign-in and an Apps Script calendar: the first disconne
 
   const first = await t.run(calendar('disconnect'));
   assert.match(text(first), /Disconnected your Google account/);
-  assert.match(text(first), /Run `\/calendar disconnect` again to remove that one too/);
+  assert.match(text(first), /Run `\/calendar` again and press \*\*Disconnect Apps Script\*\* to remove that one too/);
   assert.equal(t.db.sql("SELECT gcal_error FROM meetings WHERE name = 'Old'")[0].gcal_error, null, 'the script\'s meeting is untouched');
   assert.equal(t.db.sql("SELECT gcal_error FROM meetings WHERE name = 'Team Sync'")[0].gcal_error, 'calendar disconnected by its owner');
 
-  const second = await t.run(calendar('disconnect'));
+  assert.deepEqual(labels(await t.run(calendar('status'))), ['Connect', 'Disconnect Apps Script']);
+  const second = await t.run(calendar('disconnect-bridge'));
   assert.match(text(second), /Disconnected script@gmail\.com/);
   assert.equal(t.db.sql("SELECT gcal_error FROM meetings WHERE name = 'Old'")[0].gcal_error, 'calendar disconnected by its owner');
 });
@@ -224,11 +244,11 @@ test('the slow part runs after Discord is answered, and the result is shown in t
   const t = setup({ deferred });
   await pmWithMeeting(t);
   const r = await t.run(calendar('disconnect'));
-  assert.equal(r.type, 5);
-  assert.equal(r.data.flags, 64);
+  assert.equal(r.type, 6, 'a deferred update: Discord keeps the private message while the bot works');
   await Promise.all(deferred);
   assert.equal(t.discord.edits.length, 1);
   assert.match(t.discord.edits[0].content, /Disconnected your Google account/);
+  assert.deepEqual(t.discord.edits[0].components, [], 'the buttons are removed once it is done');
   assert.equal(await getConnection(t.db, 'u1'), null);
 });
 
@@ -278,21 +298,78 @@ test('status: never checked, a temporary problem, another server, and a lost sig
   await markDisconnected(t.db, 'u1', 'invalid_grant', NOW - 120);
   const lost = text(await t.run(calendar('status')));
   assert.match(lost, /Google sign-in: disconnected\.\*\* It was \*\*u1@gmail\.com\*\*/);
-  assert.match(lost, /\/calendar connect/);
+  assert.match(lost, /Press \*\*Reconnect\*\*/);
 });
 
-test('status: nothing connected; an Apps Script calendar alone looks exactly as before; both are shown together', async () => {
+test('status: nothing connected; an Apps Script calendar alone; both are shown together', async () => {
   const t = setup({ bridge: createFakeBridge() });
   assert.match(text(await t.run(calendar('status'))), /not connected/);
 
   await saveCalendarAccount(t.db, 'u1', 'https://script.google.com/macros/s/AAAA/exec', 'script@gmail.com', NOW);
   const alone = text(await t.run(calendar('status')));
-  assert.match(alone, /^Connected as script@gmail\.com \(since <t:\d+:D>\)\.\nUpcoming synced meetings: 0\./);
+  assert.match(alone, /^\*\*Apps Script calendar: connected\*\* as script@gmail\.com \(since <t:\d+:D>\)\.\nUpcoming synced meetings: 0\./);
 
   await connectGoogle(t);
   const both = text(await t.run(calendar('status')));
   assert.match(both, /Google sign-in: connected/);
   assert.match(both, /Apps Script calendar: connected\*\* as script@gmail\.com/);
+});
+
+test('status shows the buttons that fit each state, and every reply is private', async () => {
+  const t = setup({ bridge: createFakeBridge() });
+  const status = async (who) => {
+    const r = await t.run(calendar('status', who));
+    assert.equal(r.type, 4);
+    assert.equal(r.data.flags, 64);
+    for (const b of buttonsOf(r)) assert.ok(b.custom_id?.startsWith('calendar:'));
+    return r;
+  };
+  const nothing = await status();
+  assert.match(text(nothing), /\*\*not connected\*\*\. Press \*\*Connect\*\*/);
+  assert.deepEqual(labels(nothing), ['Connect']);
+  assert.deepEqual(buttonsOf(nothing).map((b) => b.style), [1]);
+
+  await connectGoogle(t);
+  const google = await status();
+  assert.deepEqual(labels(google), ['Disconnect Google'], 'no Connect button while connected');
+  assert.equal(buttonsOf(google)[0].style, 4);
+
+  await saveCalendarAccount(t.db, 'u1', 'https://script.google.com/macros/s/AAAA/exec', 'script@gmail.com', NOW);
+  assert.deepEqual(labels(await status()), ['Disconnect Google', 'Disconnect Apps Script']);
+
+  await markDisconnected(t.db, 'u1', 'invalid_grant', NOW);
+  assert.deepEqual(labels(await status()), ['Reconnect', 'Disconnect Google', 'Disconnect Apps Script'], 'a lost sign-in can be reconnected or removed');
+
+  // An Apps Script calendar alone, on a bot without Google sign-in: nothing to connect with a button.
+  const bridgeOnly = setup({ bridge: createFakeBridge(), signInConfigured: false });
+  await saveCalendarAccount(bridgeOnly.db, 'u1', 'https://script.google.com/macros/s/AAAA/exec', 'script@gmail.com', NOW);
+  assert.deepEqual(labels(await bridgeOnly.run(calendar('status'))), ['Disconnect Apps Script']);
+  const plain = await bridgeOnly.run(calendar('status', { user: 'u2' }));
+  assert.match(text(plain), /Google sign-in is not set up on this bot.*\/calendar url:/);
+  assert.deepEqual(labels(plain), []);
+});
+
+test('the Connect button: a fresh one-time link each click, refused while already connected or without Google settings', async () => {
+  const t = setup();
+  const first = await t.run(calendar('connect'));
+  assert.equal(first.type, 7);
+  const [link] = buttonsOf(first);
+  assert.deepEqual([link.type, link.style, link.label], [2, 5, 'Sign in with Google']);
+  assert.equal(link.custom_id, undefined, 'a link button has a url, not a custom id');
+  assert.ok(link.url.length <= 512);
+  assert.match(text(first), /works once, for 10 minutes/);
+  const second = await t.run(calendar('connect'));
+  assert.notEqual(buttonsOf(second)[0].url, link.url, 'each click makes a new link');
+
+  await connectGoogle(t);
+  const already = await t.run(calendar('connect'));
+  assert.match(text(already), /already connected.*Disconnect Google/);
+  assert.deepEqual(already.data.components, []);
+
+  const off = setup({ signInConfigured: false, bridge: createFakeBridge() });
+  const none = await off.run(calendar('connect'));
+  assert.match(text(none), /Google sign-in is not set up on this bot/);
+  assert.deepEqual(none.data.components, []);
 });
 
 test('status and disconnect never show a token, a key or a secret', async () => {

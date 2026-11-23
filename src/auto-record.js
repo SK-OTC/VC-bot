@@ -10,7 +10,7 @@
 //   1. the location is a Discord channel link, recording is configured on this Worker, and the link is for THIS meeting's server
 //   2. this occurrence of the meeting has not already been handled (the job can be delivered twice, and a failed start message is
 //      retried): the earlier session is reported instead, and the database refuses a second session for the same occurrence
-//   3. that voice channel has a /setup-recording (the same gate /start-recording applies)
+//   3. that voice channel is allowed with /recording voice-channel (the same gate /start-recording applies)
 //   4. nothing is being recorded in the server right now (the recorder cannot join a second channel)
 //   5. Discord says it is a voice channel in that server which the bot can see
 // Then the meeting's named recording setup is resolved (a missing one falls back to Default, and `fallback` says so) and its
@@ -50,7 +50,7 @@ export async function autoRecord({ db, discord, recorder, meeting, fireAt, nowSe
   if (earlier) return already(earlier, channelId);
 
   const vcSetup = await getRecordingSetup(db, channelId, meeting.guild_id);
-  if (!vcSetup) return no('no_setup', 'that voice channel has no /setup-recording', { channelId });
+  if (!vcSetup) return no('no_setup', 'that voice channel is not allowed with /recording voice-channel', { channelId });
 
   await failStaleSessions(db, meeting.guild_id, nowSec);
   const live = await findLiveSessions(db, meeting.guild_id);

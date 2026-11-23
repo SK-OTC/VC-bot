@@ -38,7 +38,9 @@ test('the policy says what the app really does, in the owner\'s terms', () => {
   const t = text(privacyPage({ contactEmail: 'privacy@example.com' }));
   assert.match(t, /private tool run for one team/);
   assert.match(t, /create, edit and cancel the calendar events for meetings the organiser schedules/);
-  assert.match(t, /\/calendar disconnect/);
+  assert.match(t, /Disconnect Google button under \/calendar revokes/);
+  assert.match(t, /\/remove-team-member\s*\(\s*all:True\s*deletes the whole team\)/);
+  assert.doesNotMatch(t, /\/delete-team|\/calendar disconnect|\/calendar connect/);
   assert.match(t, /We do not sell your data/);
   assert.match(t, /anything other than the features described above/);
   assert.match(t, /your Discord user ID, the web address of your Apps Script, the Google account address that script reports/);

@@ -1,7 +1,7 @@
 // HTTP endpoints the GitHub recorder calls. All need `Authorization: Bearer <WORKER_SHARED_SECRET>`.
 //   GET  /api/sessions/<session id>/stop    -> { "stop": true | false }        (polled every 15 s while recording)
 //   GET  /api/ai-budget                     -> { summary_allowed, neurons_today, summary_cap }  (the recorder asks before choosing a model)
-//   GET  /api/sessions/<session id>/config  -> where that session's results go (404 if no /setup-recording; 409 once it has ended)
+//   GET  /api/sessions/<session id>/config  -> where that session's results go (404 if the voice channel is not allowed with /recording voice-channel; 409 once it has ended)
 //   POST /api/sessions/<session id>/finish  -> { "ok": true }                  (the job ended: { status: "done" | "failed", error? })
 //   POST /api/transcripts                   -> stores a finished transcript    (called once, at the end); the answer
 //                                              includes a one-time private web link: { ok, id, chunks, share_url?, share_expires_at? }
@@ -69,7 +69,7 @@ async function aiBudget(env, nowSec) {
 }
 
 /**
- * Where this recording's transcript goes, from /setup-recording. Only the session's own voice channel is ever returned,
+ * Where this recording's transcript goes, from its recording setup. Only the session's own voice channel is ever returned,
  * and only to a caller with the shared secret, so the channel mapping never has to appear in GitHub's public logs.
  */
 async function sessionConfig(env, rawId) {
@@ -80,9 +80,8 @@ async function sessionConfig(env, rawId) {
   if (session.status !== 'starting' && session.status !== 'running') return respond({ error: 'session ended' }, 409);
   const setup = await getRecordingSetup(env.DB, session.voice_channel_id, session.guild_id);
   if (!setup) return respond({ error: 'not found' }, 404);
-  // What to do with the results: the server's /transcript-settings (save, post, destination), then the session's named recording
-  // setup (fixed when it started), falling back to the voice channel's own transcript channel and then the channel where the
-  // recording was started (see resolveRouting).
+  // What to do with the results: the server's save/post switches, then the session's named recording
+  // setup (fixed when it started), falling back to the channel where the recording was started (see resolveRouting).
   const route = resolveRouting({ settings: await getTranscriptSettings(env.DB, session.guild_id), setup, session });
   // The backup channel is where a transcript file that could not be posted is rescued to, so the recorder refuses one that is the
   // transcript channel itself. A named setup's private channel can be that same channel: then there is no separate backup, and the

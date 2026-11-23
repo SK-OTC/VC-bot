@@ -28,15 +28,15 @@ export async function cmdStartRecording(ctx, o) {
   }
   if (!SNOWFLAKE_RE.test(channelId)) return fail('That does not look like a voice channel. Pick one with the `channel` option.');
 
-  // A voice channel can only be recorded after an admin has said where its transcript goes (/setup-recording). This also
+  // A voice channel can only be recorded after an admin has allowed it (/recording voice-channel). This also
   // stops anyone starting a recording in a channel the team never agreed to record.
   const setup = await getRecordingSetup(db, channelId, guildId);
   if (!setup) {
-    return fail(`<#${channelId}> is not set up for recording yet. A server admin can set it up with \`/setup-recording\`.`);
+    return fail(`<#${channelId}> is not set up for recording yet. A server admin can allow it with \`/recording voice-channel\`.`);
   }
 
-  // The channel where this command was typed is where the transcript goes, unless /transcript-settings, the server's Default
-  // recording setup (/recording setup name:Default) or the voice channel's setup names another one (see resolveRouting).
+  // The channel where this command was typed is where the transcript goes, unless the server's Default
+  // recording setup (/recording setup name:Default) names another one (see resolveRouting).
   // A recording started by hand is not a meeting, so it always uses the Default setup.
   const { setup: named } = await resolveNamedSetup(db, guildId, null);
   const routing = sessionRouting(named);

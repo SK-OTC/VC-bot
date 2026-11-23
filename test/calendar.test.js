@@ -41,10 +41,17 @@ function cmd(name, sub, opts = {}, { user = 'u1', guild = 'g1', perms = '0', tok
   };
 }
 const MEETING_NAMES = { create: 'new-meeting', update: 'update-meeting', cancel: 'cancel-meeting', list: 'upcoming-meetings', 'preset-save': 'add-update-preset', presets: 'meeting-presets', 'preset-delete': 'delete-preset' };
-const GUEST_NAMES = { add: 'add-team', remove: 'remove-team-member', list: 'show-teams', 'delete-team': 'delete-team' };
+// Deleting a whole team is /remove-team-member all:True (there is no /delete-team any more).
+const GUEST_NAMES = { add: 'add-team', remove: 'remove-team-member', list: 'show-teams', 'delete-team': 'remove-team-member' };
 const meeting = (sub, opts, who) => cmd(MEETING_NAMES[sub], null, opts, who);
-const guests = (sub, opts, who) => cmd(GUEST_NAMES[sub], null, opts, who);
-const calendar = (sub, opts, who) => cmd('calendar', sub, opts, who);
+const guests = (sub, opts, who) => cmd(GUEST_NAMES[sub], null, sub === 'delete-team' ? { ...opts, all: true } : opts, who);
+// /calendar has no subcommands: no options = status (with buttons), `url` = connect the Apps Script bridge.
+const calendar = (opts = {}, who) => cmd('calendar', null, opts, who);
+/** A click on one of the buttons under a /calendar reply (a message component interaction). */
+function click(customId, { user = 'u1', guild = 'g1', perms = '0', token = `tok-${user}` } = {}) {
+  return { type: 3, guild_id: guild, channel_id: 'c1', application_id: 'app1', token, member: { user: { id: user }, permissions: perms }, data: { custom_id: customId, component_type: 2 } };
+}
+const buttonsOf = (r) => (r.data.components ?? []).flatMap((row) => row.components ?? []);
 const isEphemeral = (r) => (r.data.flags & 64) === 64;
 const rows = (t, where = '1=1') => t.db.sql(`SELECT * FROM meetings WHERE ${where} ORDER BY id`);
 const row = (t) => rows(t)[0];
@@ -206,14 +213,39 @@ test('guests remove, list and delete-team', async () => {
   assert.equal(t.db.sql('SELECT COUNT(*) AS n FROM guests')[0].n, 1);
 });
 
+test('remove-team-member: exactly one of emails or all:True; all:True deletes the team', async () => {
+  const t = setup();
+  await t.run(guests('add', { team: 'Design', emails: 'a@gmail.com, b@gmail.com' }));
+  const count = () => t.db.sql('SELECT COUNT(*) AS n FROM guests')[0].n;
+
+  const neither = await t.run(guests('remove', { team: 'Design' }));
+  assert.equal(isEphemeral(neither), true);
+  assert.match(neither.data.content, /Give the `emails` to remove from \*\*Design\*\*, or `all:True`/);
+  const allFalse = await t.run(guests('remove', { team: 'Design', all: false }));
+  assert.match(allFalse.data.content, /Give the `emails`/);
+  const both = await t.run(guests('remove', { team: 'Design', emails: 'a@gmail.com', all: true }));
+  assert.match(both.data.content, /either `emails`.*or `all:True`.*not both\. Nothing was changed/);
+  assert.equal(count(), 2);
+  assert.equal(t.db.sql('SELECT COUNT(*) AS n FROM guest_teams')[0].n, 1);
+
+  // all:false with emails is an ordinary removal
+  assert.match((await t.run(guests('remove', { team: 'Design', emails: 'b@gmail.com', all: false }))).data.content, /Removed 1 from \*\*Design\*\*/);
+  const del = await t.run(guests('remove', { team: 'Design', all: true }));
+  assert.match(del.data.content, /Deleted the team \*\*Design\*\* and its addresses/);
+  assert.equal(count(), 0);
+  assert.equal(t.db.sql('SELECT COUNT(*) AS n FROM guest_teams')[0].n, 0);
+  assert.match((await t.run(guests('remove', { team: 'Design', all: true }))).data.content, /can't find a guest team called \*\*Design\*\*/);
+});
+
 // ---------- /calendar ----------
 
 test('calendar: not enabled without a bridge secret', async () => {
   const t = setup({ enabled: false });
-  for (const sub of ['connect', 'disconnect', 'status']) {
-    const r = await t.run(calendar(sub, { url: SCRIPT_A }));
+  for (const opts of [{ url: SCRIPT_A }, {}]) {
+    const r = await t.run(calendar(opts));
     assert.equal(isEphemeral(r), true);
     assert.match(r.data.content, /not enabled.*BRIDGE_SECRET/);
+    assert.equal(buttonsOf(r).length, 0);
   }
 });
 
@@ -226,7 +258,7 @@ test('calendar connect: bad URLs are refused with the reason and nothing is sent
     ['garbage', /not a valid URL/],
   ];
   for (const [url, why] of cases) {
-    const r = await t.run(calendar('connect', { url }));
+    const r = await t.run(calendar({ url }));
     assert.equal(isEphemeral(r), true);
     assert.match(r.data.content, /Could not connect:/);
     assert.match(r.data.content, why);
@@ -237,7 +269,7 @@ test('calendar connect: bad URLs are refused with the reason and nothing is sent
 
 test('calendar connect: answers right away (deferred), then edits the reply with the result', async () => {
   const t = setup();
-  const r = await t.run(calendar('connect', { url: SCRIPT_A }));
+  const r = await t.run(calendar({ url: SCRIPT_A }));
   assert.equal(r.type, 5);
   assert.equal(isEphemeral(r), true);
   await t.settle();
@@ -249,43 +281,46 @@ test('calendar connect: answers right away (deferred), then edits the reply with
   const acct = t.db.sql('SELECT * FROM calendar_accounts')[0];
   assert.deepEqual([acct.user_id, acct.script_url, acct.account_email], ['u1', SCRIPT_A, 'pm@gmail.com']);
 
-  const status = await t.run(calendar('status'));
-  assert.match(status.data.content, /Connected as pm@gmail\.com/);
+  const status = await t.run(calendar());
+  assert.match(status.data.content, /Apps Script calendar: connected\*\* as pm@gmail\.com/);
+  assert.deepEqual(buttonsOf(status).map((b) => [b.label, b.custom_id]), [['Disconnect Apps Script', 'calendar:disconnect-bridge']]);
 });
 
 test('calendar connect: a failing ping is explained and nothing is saved', async () => {
   const t = setup({ bridge: createFakeBridge({ script: [{ ok: false, retryable: false, error: 'Google Calendar bridge: the script rejected the secret.' }] }) });
-  await t.run(calendar('connect', { url: SCRIPT_A }));
+  await t.run(calendar({ url: SCRIPT_A }));
   await t.settle();
   assert.match(t.discord.edits[0].content, /Could not connect: Google Calendar bridge: the script rejected the secret\./);
   assert.match(t.discord.edits[0].content, /GOOGLE_CALENDAR\.md/);
   assert.equal(t.db.sql('SELECT COUNT(*) AS n FROM calendar_accounts')[0].n, 0);
-  assert.match((await t.run(calendar('status'))).data.content, /not connected/);
+  assert.match((await t.run(calendar())).data.content, /not connected/);
 });
 
 test('calendar connect: an unexpected error is reported, not swallowed; no token means an inline answer', async () => {
   const boom = { async call() { throw new Error('kaboom'); } };
   const t = setup({ bridge: boom });
-  await t.run(calendar('connect', { url: SCRIPT_A }));
+  await t.run(calendar({ url: SCRIPT_A }));
   await t.settle();
   assert.match(t.discord.edits[0].content, /Could not connect: unexpected error: kaboom/);
 
   const t2 = setup();
-  const noToken = cmd('calendar', 'connect', { url: SCRIPT_A });
+  const noToken = cmd('calendar', null, { url: SCRIPT_A });
   delete noToken.token;
   const r = await t2.run(noToken);
   assert.equal(r.type, 4);
   assert.match(r.data.content, /Connected as pm@gmail\.com/);
 });
 
-test('calendar disconnect: stops syncing, keeps the Google events, and flags the affected meetings', async () => {
+test('calendar Disconnect Apps Script button: stops syncing, keeps the Google events, and flags the affected meetings', async () => {
   const t = setup();
   await pm(t);
   await create(t);
   await t.sync(); // event created
   await create(t, { name: 'Other', calendar: false });
 
-  const r = await t.run(calendar('disconnect'));
+  const r = await t.run(click('calendar:disconnect-bridge'));
+  assert.equal(r.type, 7); // the button's own (private) message is replaced
+  assert.deepEqual(r.data.components, []);
   assert.match(r.data.content, /Disconnected pm@gmail\.com/);
   assert.match(r.data.content, /1 upcoming meeting keeps its Google event but will no longer sync/);
   assert.equal(t.db.sql('SELECT COUNT(*) AS n FROM calendar_accounts')[0].n, 0);
@@ -294,7 +329,32 @@ test('calendar disconnect: stops syncing, keeps the Google events, and flags the
 
   const list = await t.run(meeting('list'));
   assert.match(list.data.content, /\(calendar sync failed: calendar disconnected by its owner\)/);
-  assert.match((await t.run(calendar('disconnect'))).data.content, /not connected/);
+  assert.match((await t.run(click('calendar:disconnect-bridge'))).data.content, /not connected/);
+});
+
+test('calendar buttons: an unknown calendar button, and a button that is not ours, are answered without changing anything', async () => {
+  const t = setup();
+  await connect(t);
+  const stale = await t.run(click('calendar:something-old'));
+  assert.equal(stale.type, 7);
+  assert.match(stale.data.content, /no longer in use.*\/calendar/);
+  assert.deepEqual(stale.data.components, []);
+  const foreign = await t.run(click('other:thing'));
+  assert.match(foreign.data.content, /no longer in use/);
+  assert.equal(t.db.sql('SELECT COUNT(*) AS n FROM calendar_accounts')[0].n, 1);
+  const dm = click('calendar:disconnect-bridge');
+  delete dm.guild_id;
+  assert.match((await t.run(dm)).data.content, /inside a server/);
+  assert.equal(t.db.sql('SELECT COUNT(*) AS n FROM calendar_accounts')[0].n, 1);
+});
+
+test('calendar buttons act on the account of whoever clicks, never on someone else\'s', async () => {
+  const t = setup();
+  await connect(t, 'u1');
+  await connect(t, 'u2', SCRIPT_B, 'other@gmail.com');
+  const r = await t.run(click('calendar:disconnect-bridge', { user: 'u2' }));
+  assert.match(r.data.content, /Disconnected other@gmail\.com/);
+  assert.deepEqual(t.db.sql('SELECT user_id FROM calendar_accounts').map((a) => a.user_id), ['u1']);
 });
 
 // ---------- create / schedule ----------
@@ -328,7 +388,7 @@ test('create without a connection still creates the meeting and says how to conn
   const t = setup();
   await tz(t);
   const r = await create(t);
-  assert.match(r.data.content, /Calendar: not added to Google Calendar\. Run \/calendar connect first\./);
+  assert.match(r.data.content, /Calendar: not added to Google Calendar\. Run \/calendar and press Connect first\./);
   assert.equal(rows(t).length, 1);
   assert.equal(row(t).gcal_event_id, null);
   assert.equal(row(t).gcal_dirty, 0);
@@ -522,7 +582,7 @@ test('update calendar:true attaches your calendar to a meeting that has none, or
   await tz(t);
   await create(t, { name: 'Late' }); // not connected yet
   const early = await t.run(meeting('update', { name: 'Late', calendar: true }));
-  assert.match(early.data.content, /once you connect it\. Run `\/calendar connect` first/);
+  assert.match(early.data.content, /once you connect it\. Run `\/calendar` and press Connect first/);
 
   await connect(t);
   await t.run(guests('add', { team: 'Design', emails: 'a@gmail.com' }));

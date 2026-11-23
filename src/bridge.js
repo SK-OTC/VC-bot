@@ -94,7 +94,7 @@ export function createBridgeClient({ secret, fetchImpl, timeoutMs = BRIDGE_TIMEO
       return {
         ok: false,
         retryable: false,
-        error: `The saved script URL is not allowed (${checked.error}) The secret was NOT sent. Reconnect with /calendar connect.`,
+        error: `The saved script URL is not allowed (${checked.error}) The secret was NOT sent. Reconnect with /calendar.`,
       };
     }
 

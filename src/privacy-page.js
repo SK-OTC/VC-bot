@@ -9,7 +9,7 @@
 //  * Once a week the stored sign-in is used once to check it still works (src/calendar-keepalive.js). If Google rejects it
 //    (invalid_grant) the stored token is wiped and the organiser is messaged (src/calendar-failure.js). The channel link never
 //    contains an email address; the private message to the organiser does.
-//  * /calendar disconnect revokes the token at Google, then deletes the row (src/calendar-disconnect.js). It does not delete events.
+//  * /calendar's Disconnect Google button revokes the token at Google, then deletes the row (src/calendar-disconnect.js). It does not delete events.
 //  * Older option, still supported: a per-organiser Google Apps Script web app (Code.gs, src/bridge.js). The Worker stores NO Google
 //    token for it: only the script URL and the account address the script reports (calendar_accounts, migration 0003). Disconnecting
 //    that deletes the row and revokes nothing at Google (src/store.js deleteCalendarAccount).
@@ -48,7 +48,7 @@ export function privacyPage({ contactEmail = null } = {}) {
     'those meetings to an organiser\'s Google Calendar, and it can record, transcribe and summarise meetings held in the team\'s voice channels. ' +
     'It is not a public service. This page says what data it handles.</p>' +
     '<h2>Google Calendar</h2>' +
-    '<p>Calendar sync is optional. A meeting organiser (for example a project manager) turns it on with <code>/calendar connect</code>, which gives them a private link to sign in with Google.</p>' +
+    '<p>Calendar sync is optional. A meeting organiser (for example a project manager) turns it on with <code>/calendar</code> and its <strong>Connect</strong> button, which gives them a private link to sign in with Google.</p>' +
     '<ul>' +
     '<li><strong>Signing in:</strong> the organiser signs in on Google\'s own page and chooses what to allow. The bot never sees their Google password. It asks for exactly three permissions: to know which Google account it is (<code>openid</code> and <code>email</code>) and to manage events on calendars the organiser owns (<code>https://www.googleapis.com/auth/calendar.events.owned</code>). While this app is unverified, Google shows an &quot;unverified app&quot; warning.</li>' +
     '<li><strong>What the access is used for:</strong> to <strong>create, edit and cancel</strong> the calendar events for meetings the organiser schedules with the bot, on their primary calendar. To change or cancel an event the bot reads that same event back, by its id. It does not list or read any other events in the calendar.</li>' +
@@ -78,9 +78,9 @@ export function privacyPage({ contactEmail = null } = {}) {
     '<p>We do not sell your data, and we do not use it for advertising or for anything other than the features described above. It is handled only by the services that do the work: Discord (the messages and voice), Google (the calendar events you choose to create), Cloudflare (hosting, the database and AI), GitHub (it runs the recorder) and Groq (fallback speech-to-text, summaries and answers). Each handles it under its own terms.</p>' +
     '<h2>Disconnecting and deleting your data</h2>' +
     '<ul>' +
-    '<li><code>/calendar disconnect</code> revokes the bot\'s access at Google, so it disappears from your Google Account\'s permissions page, and then deletes your stored sign-in and connection record. If Google cannot be reached it changes nothing and asks you to try again. It does <strong>not</strong> delete events already in your Google Calendar. You can also remove the bot\'s access yourself at any time at <a href="https://myaccount.google.com/permissions" rel="noreferrer">myaccount.google.com/permissions</a>.</li>' +
-    '<li>For the older Apps Script option, <code>/calendar disconnect</code> deletes the stored web address and account address and stops syncing. It does <strong>not</strong> delete events already in your Google Calendar, and it does not remove the script\'s permission inside your Google account. To end that access as well, delete the script\'s deployment in Apps Script (<em>Deploy &gt; Manage deployments</em>) or remove its access in your Google Account settings.</li>' +
-    '<li>An organiser can remove guest email addresses with <code>/remove-team-member</code> or <code>/delete-team</code>.</li>' +
+    '<li>The <strong>Disconnect Google</strong> button under <code>/calendar</code> revokes the bot\'s access at Google, so it disappears from your Google Account\'s permissions page, and then deletes your stored sign-in and connection record. If Google cannot be reached it changes nothing and asks you to try again. It does <strong>not</strong> delete events already in your Google Calendar. You can also remove the bot\'s access yourself at any time at <a href="https://myaccount.google.com/permissions" rel="noreferrer">myaccount.google.com/permissions</a>.</li>' +
+    '<li>For the older Apps Script option, the <strong>Disconnect Apps Script</strong> button under <code>/calendar</code> deletes the stored web address and account address and stops syncing. It does <strong>not</strong> delete events already in your Google Calendar, and it does not remove the script\'s permission inside your Google account. To end that access as well, delete the script\'s deployment in Apps Script (<em>Deploy &gt; Manage deployments</em>) or remove its access in your Google Account settings.</li>' +
+    '<li>An organiser can remove guest email addresses with <code>/remove-team-member</code> (<code>all:True</code> deletes the whole team).</li>' +
     '<li>For anything else, including transcripts and summaries, ask for deletion by contacting us (below). There is no self-service command for that today.</li>' +
     '</ul>' +
     '<h2>Contact</h2>' +

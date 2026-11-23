@@ -1,9 +1,10 @@
-// /setup-recording, /recording-settings and /remove-recording-setup: where each voice channel's transcript goes.
-// This replaces the TEAM_CONFIG GitHub secret. Only people with Manage Server can change anything, every channel is
-// checked against Discord when the setup is saved (so a mistake shows up now, not in the middle of a meeting), and
-// /start-recording refuses to record a voice channel that has no setup.
+// /recording voice-channel (and the voice channel half of /recording list and /recording delete): which voice channels may be
+// recorded, with their transcript heading, language, glossary and audio backup channel. This replaces the TEAM_CONFIG GitHub secret.
+// Only people with Manage Server can change anything, every new channel is checked against Discord when it is saved (so a mistake
+// shows up now, not in the middle of a meeting), and /start-recording refuses to record a voice channel that is not allowed here.
+// Where the transcript goes is not decided here: that is the recording setup's job (/recording setup).
 import { MessageFlags, ResponseType } from './discord.js';
-import { fail, hasManagePerms, reply } from './replies.js';
+import { fail, reply } from './replies.js';
 import { MAX_SETUPS_PER_GUILD, countRecordingSetups, deleteRecordingSetup, getRecordingSetup, listRecordingSetups, saveRecordingSetup } from './recording-store.js';
 
 const SNOWFLAKE_RE = /^\d{17,20}$/;
@@ -37,11 +38,11 @@ export function respondLater(ctx, run) {
       try {
         content = await run();
       } catch (e) {
-        console.error('setup-recording failed:', e?.name ?? 'Error');
+        console.error('recording command failed:', e?.name ?? 'Error');
         content = `Something went wrong: ${String(e?.message ?? e).slice(0, 200)}`;
       }
       const res = await discord.editOriginal(appId, token, { content });
-      if (!res.ok) console.error(`setup-recording: could not edit the reply: ${res.error}`);
+      if (!res.ok) console.error(`recording command: could not edit the reply: ${res.error}`);
     })(),
   );
   return { type: ResponseType.DEFERRED, data: { flags: MessageFlags.EPHEMERAL } };
@@ -58,112 +59,103 @@ export const channelProblem = (id, got, { types, label }, guildId) => {
   return null;
 };
 
-export async function cmdSetupRecording(ctx, o) {
-  if (!hasManagePerms(ctx.interaction)) return fail(NEEDS_MANAGE);
-  const { db, discord, nowSec, userId, guildId } = ctx;
+/** One allowed voice channel in one line. */
+export function describeVoiceChannel(s) {
+  return (
+    `**${s.name}**: <#${s.voice_channel_id}>` +
+    (s.backup_channel_id ? `, backup <#${s.backup_channel_id}>` : '') +
+    `, language ${s.language}` +
+    (s.glossary ? `, glossary: ${s.glossary.length > 80 ? `${s.glossary.slice(0, 77)}...` : s.glossary}` : '')
+  );
+}
 
+/** /recording voice-channel. The caller has already checked Manage Server. */
+export async function cmdRecordingVoiceChannel(ctx, o) {
+  const { db, discord, nowSec, userId, guildId } = ctx;
   const voiceId = String(o.voice_channel ?? '');
-  const transcriptId = o.transcript_channel ? String(o.transcript_channel) : null; // optional: by default the channel where recording is started
-  const backupId = o.backup_channel ? String(o.backup_channel) : null;
-  for (const id of [voiceId, transcriptId, backupId].filter(Boolean)) {
-    if (!SNOWFLAKE_RE.test(id)) return fail('One of the channels is not valid. Pick them from the list Discord shows.');
+  if (!SNOWFLAKE_RE.test(voiceId)) return fail('That is not a valid voice channel. Pick it from the list Discord shows.');
+  const existing = await getRecordingSetup(db, voiceId, guildId);
+
+  const changing = ['name', 'backup_channel', 'language', 'glossary', 'clear'].some((k) => o[k] !== undefined);
+  if (existing && !changing) {
+    return reply(`${describeVoiceChannel(existing)}\nChange it by adding options to this command. Stop it being recordable with \`/recording delete voice_channel:\`.`, { ephemeral: true });
   }
-  if (new Set([voiceId, transcriptId, backupId].filter(Boolean)).size !== [voiceId, transcriptId, backupId].filter(Boolean).length) {
-    return fail('The voice channel, the transcript channel and the backup channel must all be different channels.');
+  if (!existing && (await countRecordingSetups(db, guildId)) >= MAX_SETUPS_PER_GUILD) {
+    return fail(`This server already allows ${MAX_SETUPS_PER_GUILD} voice channels to be recorded. Remove one with \`/recording delete voice_channel:\` first.`);
   }
-  const language = o.language === undefined ? 'en' : String(o.language).trim().toLowerCase();
+
+  const clear = o.clear === undefined ? null : String(o.clear);
+  if (clear && !['backup_channel', 'glossary'].includes(clear)) return fail('`clear` must be backup_channel or glossary.');
+  if (clear && o[clear] !== undefined) return fail(`Pick either \`${clear}\` or \`clear:${clear}\`, not both.`);
+
+  const backupId = clear === 'backup_channel' ? null : o.backup_channel !== undefined ? String(o.backup_channel) : existing?.backup_channel_id ?? null;
+  if (backupId && !SNOWFLAKE_RE.test(backupId)) return fail('The backup channel is not valid. Pick it from the list Discord shows.');
+  if (backupId && backupId === voiceId) return fail('The backup channel must be a text channel, not the voice channel itself.');
+  const language = o.language !== undefined ? String(o.language).trim().toLowerCase() : existing?.language ?? 'en';
   if (!LANGUAGE_RE.test(language)) return fail('`language` must be a 2 or 3 letter code such as `en`, `es` or `fr`.');
-  const glossary = tidy(o.glossary);
+  const glossary = clear === 'glossary' ? '' : o.glossary !== undefined ? tidy(o.glossary) : existing?.glossary ?? '';
   if (glossary.length > MAX_GLOSSARY) return fail(`\`glossary\` is too long (max ${MAX_GLOSSARY} characters).`);
   const typedName = tidy(o.name);
   if (typedName.length > MAX_NAME) return fail(`\`name\` is too long (max ${MAX_NAME} characters).`);
 
-  const existing = await getRecordingSetup(db, voiceId, guildId);
-  if (!existing && (await countRecordingSetups(db, guildId)) >= MAX_SETUPS_PER_GUILD) {
-    return fail(`This server already has ${MAX_SETUPS_PER_GUILD} recording setups. Remove one with \`/remove-recording-setup\` first.`);
-  }
+  // A backup channel that is new or changed is checked against Discord and gets a real message, like every newly named channel.
+  const newBackup = backupId && backupId !== existing?.backup_channel_id ? backupId : null;
+
+  const save = async (voiceName) => {
+    const name = typedName || existing?.name || tidy(voiceName).slice(0, MAX_NAME) || 'Meeting';
+    const saved = await saveRecordingSetup(db, { voiceChannelId: voiceId, guildId, name, backupChannelId: backupId, glossary, language, createdBy: userId }, nowSec);
+    if (!saved.ok) return 'That voice channel already belongs to another server, so it cannot be set up here.';
+    const row = { voice_channel_id: voiceId, name, backup_channel_id: backupId, glossary, language };
+    return (
+      `${saved.updated ? 'Updated' : 'Allowed'} recording in <#${voiceId}>.\n${describeVoiceChannel(row)}\n` +
+      'The transcript and summary go where the recording setup says (`/recording setup name:Default` for `/start-recording`).' +
+      (saved.updated
+        ? ''
+        : `\nStill to check by hand: the bot needs **View Channel** and **Connect** in <#${voiceId}> and **Change Nickname** in the server. ` +
+          'Anyone can now start a recording there with `/start-recording`.')
+    );
+  };
+  const text = (content) => reply(content, { ephemeral: true });
+  if (existing && !newBackup) return text(await save());
 
   return respondLater(ctx, async () => {
-    const [voice, transcript, backup] = await Promise.all([
-      discord.getChannel(voiceId),
-      transcriptId ? discord.getChannel(transcriptId) : Promise.resolve(null),
-      backupId ? discord.getChannel(backupId) : Promise.resolve(null),
+    const [voice, backup] = await Promise.all([
+      existing ? Promise.resolve(null) : discord.getChannel(voiceId),
+      newBackup ? discord.getChannel(newBackup) : Promise.resolve(null),
     ]);
     const problems = [
-      channelProblem(voiceId, voice, { types: [VOICE], label: 'voice channel' }, guildId),
-      transcript ? channelProblem(transcriptId, transcript, { types: TEXT_TYPES, label: 'text channel' }, guildId) : null,
-      backup ? channelProblem(backupId, backup, { types: TEXT_TYPES, label: 'text channel' }, guildId) : null,
+      voice ? channelProblem(voiceId, voice, { types: [VOICE], label: 'voice channel' }, guildId) : null,
+      backup ? channelProblem(newBackup, backup, { types: TEXT_TYPES, label: 'text channel' }, guildId) : null,
     ].filter(Boolean);
     if (problems.length) return `Nothing was saved.\n${problems.map((p) => `• ${p}`).join('\n')}`;
-
-    // A real message proves the bot can see the channel and send there, and tells the team where transcripts will go.
-    // The backup channel goes first and the team-facing announcement last: if any post fails, nothing is saved, and the
-    // transcript channel has not been told that recording is on.
-    const posts = [
-      ...(backupId ? [[backupId, 'View Channel, Send Messages and Attach Files', `Audio backups for meetings in <#${voiceId}> will be posted in this channel.`]] : []),
-      ...(transcriptId ? [[transcriptId, 'View Channel, Send Messages, Attach Files and Read Message History', `🔴 Meetings in <#${voiceId}> are now recorded and transcribed. Each transcript and summary will be posted in this channel.`]] : []),
-    ];
-    const blocked = [];
-    for (const [id, wants, content] of posts) {
-      const sent = await discord.postMessage(id, { content, allowedMentions: { parse: [] } });
-      if (!sent.ok) {
-        blocked.push(`• ${needsIn(id, wants)} (Discord said: ${sent.error})`);
-        break; // stop at the first failure so nothing later is announced
-      }
+    // A real message proves the bot can post (and attach files) in the backup channel.
+    if (newBackup) {
+      const sent = await discord.postMessage(newBackup, { content: `Audio backups for meetings in <#${voiceId}> will be posted in this channel.`, allowedMentions: { parse: [] } });
+      if (!sent.ok) return `Nothing was saved. I couldn't post in every channel:\n• ${needsIn(newBackup, 'View Channel, Send Messages and Attach Files')} (Discord said: ${sent.error})`;
     }
-    if (blocked.length) return `Nothing was saved. I couldn't post in every channel:\n${blocked.join('\n')}`;
-
-    const name = typedName || tidy(voice.channel.name).slice(0, MAX_NAME) || 'Meeting';
-    const saved = await saveRecordingSetup(
-      db,
-      { voiceChannelId: voiceId, guildId, name, transcriptChannelId: transcriptId, backupChannelId: backupId, glossary, language, createdBy: userId },
-      nowSec,
-    );
-    if (!saved.ok) return 'That voice channel already belongs to another server, so it cannot be set up here.';
-    return (
-      `${saved.updated ? 'Updated' : 'Saved'} the recording setup for <#${voiceId}> (**${name}**).\n` +
-      (transcriptId ? `• Transcript and summary: <#${transcriptId}>\n` : '• Transcript and summary: the channel where each recording is started (change that with `/transcript-settings`)\n') +
-      (backupId ? `• Audio backup: <#${backupId}>\n` : '• Audio backup: none\n') +
-      `• Language: ${language}${glossary ? `\n• Glossary: ${glossary}` : ''}\n` +
-      `Still to check by hand: the bot needs **View Channel** and **Connect** in <#${voiceId}> and **Change Nickname** in the server. ` +
-      'Anyone can now start a recording there with `/start-recording`.'
-    );
+    return save(voice?.channel?.name);
   });
 }
 
-export async function cmdRecordingSettings(ctx, o) {
-  if (!hasManagePerms(ctx.interaction)) return fail(NEEDS_MANAGE);
-  const { db, guildId } = ctx;
-  const line = (s) =>
-    `**${s.name}**: <#${s.voice_channel_id}> → ${s.transcript_channel_id ? `<#${s.transcript_channel_id}>` : 'where the recording is started'}` +
-    (s.backup_channel_id ? `, backup <#${s.backup_channel_id}>` : '') +
-    `, language ${s.language}` +
-    (s.glossary ? `, glossary: ${s.glossary.length > 80 ? `${s.glossary.slice(0, 77)}...` : s.glossary}` : '');
-  if (o.voice_channel) {
-    const s = await getRecordingSetup(db, String(o.voice_channel), guildId);
-    return s ? reply(line(s), { ephemeral: true }) : fail(`<#${o.voice_channel}> has no recording setup. Create one with \`/setup-recording\`.`);
-  }
+/** The voice channel half of /recording list: one line per allowed voice channel, cut to fit in `budget` characters. */
+export async function voiceChannelLines(db, guildId, budget) {
   const all = await listRecordingSetups(db, guildId);
-  if (!all.length) return reply('No voice channel is set up for recording yet. An admin can set one up with `/setup-recording`.', { ephemeral: true });
-  // Discord rejects messages over 2000 characters, and 25 setups with long glossaries can add up to far more.
   const shown = [];
-  let used = '**Recording setups**\n'.length;
+  let used = 0;
   for (const s of all) {
-    const text = `• ${line(s)}`;
-    if (used + text.length + 1 > 1800) break;
-    shown.push(text);
-    used += text.length + 1;
+    const line = `• ${describeVoiceChannel(s)}`;
+    if (used + line.length + 1 > budget) break;
+    shown.push(line);
+    used += line.length + 1;
   }
-  const more = all.length - shown.length;
-  const tail = more ? `\n…and ${more} more. Use the \`voice_channel\` option to see one.` : '';
-  return reply(`**Recording setups**\n${shown.join('\n')}${tail}`, { ephemeral: true });
+  return { shown, more: all.length - shown.length, total: all.length };
 }
 
-export async function cmdRemoveRecordingSetup(ctx, o) {
-  if (!hasManagePerms(ctx.interaction)) return fail(NEEDS_MANAGE);
-  const voiceId = String(o.voice_channel ?? '');
-  const removed = await deleteRecordingSetup(ctx.db, voiceId, ctx.guildId);
+/** The voice channel half of /recording delete. */
+export async function removeVoiceChannel(ctx, rawId) {
+  const voiceId = String(rawId ?? '');
+  const removed = SNOWFLAKE_RE.test(voiceId) && (await deleteRecordingSetup(ctx.db, voiceId, ctx.guildId));
   return removed
-    ? reply(`Removed the recording setup for <#${voiceId}>. It can no longer be recorded until it is set up again. A recording already running there is not stopped (use \`/stop-recording\`).`, { ephemeral: true })
-    : fail(`<#${voiceId}> has no recording setup.`);
+    ? reply(`<#${voiceId}> can no longer be recorded until it is allowed again with \`/recording voice-channel\`. A recording already running there is not stopped (use \`/stop-recording\`).`, { ephemeral: true })
+    : fail(`<#${voiceId}> is not allowed to be recorded, so there is nothing to remove.`);
 }

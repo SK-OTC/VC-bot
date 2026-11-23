@@ -57,7 +57,7 @@ async function main() {
     process.exit(0);
   }
   const cfg = parseSessionConfig(process.env, remote.found ? remote.team : null);
-  log(remote.found ? 'recording settings: from /setup-recording' : `recording settings: from TEAM_CONFIG (${remote.reason})`);
+  log(remote.found ? 'recording settings: from /recording voice-channel' : `recording settings: from TEAM_CONFIG (${remote.reason})`);
   mkdirSync(OUT_DIR, { recursive: true });
   log(`node ${process.version}; team config found; limit ${cfg.maxMinutes} min`);
   // Transcription engines, in ENGINE_ORDER (default: Parakeet first, Groq Whisper as the fallback). Parakeet starts loading its
@@ -76,7 +76,7 @@ async function main() {
   const me = guild.members.me ?? (await guild.members.fetchMe());
   if (me.voice.channelId) throw new Error('The bot is already in a voice channel in this server (one recording at a time per bot per server)');
 
-  // Where results are posted. With posting off (/transcript-settings) there is no channel: the summary link goes to whoever started it.
+  // Where results are posted. With posting off (/recording setup name:Default) there is no channel: the summary link goes to whoever started it.
   const target = cfg.team.post ? await client.channels.fetch(cfg.team.transcriptChannelId) : null;
   if (cfg.team.post && (!target?.isTextBased() || target.guildId !== guild.id)) throw new Error('the transcript channel must be a text channel in the same server as the voice channel');
   const backup = cfg.team.backupChannelId ? await client.channels.fetch(cfg.team.backupChannelId) : null;
@@ -102,7 +102,7 @@ async function main() {
     throw new Error(`the ${what} channel is not a text channel I can use in this server`);
   };
   if (cfg.team.setupName) log(`recording setup: ${cfg.team.summaryChannelId ? 'separate summary channel' : 'summary with the transcript'}, ${cfg.team.linkChannelId ? 'recording link on' : 'no recording link'}, audio ${cfg.team.audioChannelId ? 'in the private channel' : cfg.team.backupChannelId ? 'in the backup channel' : 'not kept'}`);
-  // /setup-recording only proves the bot can SEND in the transcript channel. Without Attach Files the transcript file cannot be
+  // /recording setup only proves the bot can SEND in the transcript channel. Without Attach Files the transcript file cannot be
   // posted there; finishSession then saves it and sends it another way, but warn now so the log shows why. Never blocks recording.
   try {
     const perms = target?.permissionsFor?.(me);

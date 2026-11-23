@@ -100,7 +100,6 @@ const slash = (name, options, channel = 'c1') => ({
   data: { name, options },
 });
 const opts = (o = {}) => Object.entries(o).map(([n, v]) => ({ name: n, value: v, type: 3 }));
-const sub = (name, opts = {}) => [{ type: 1, name, options: Object.entries(opts).map(([n, v]) => ({ name: n, value: v, type: 3 })) }];
 
 function cleanup() {
   try {
@@ -228,11 +227,11 @@ try {
   const cron = () => fetch(`http://127.0.0.1:${PORT}/__scheduled?cron=*+*+*+*+*`);
   const isPrivate = (r) => (r.body.flags & 64) === 64;
 
-  const badUrl = await post(slash('calendar', sub('connect', { url: 'https://evil.example.com/macros/s/abc/exec' })));
-  check(/must be on script\.google\.com/.test(badUrl.json?.data?.content ?? ''), '/calendar connect refuses a URL that is not on script.google.com', badUrl.text);
+  const badUrl = await post(slash('calendar', opts({ url: 'https://evil.example.com/macros/s/abc/exec' })));
+  check(/must be on script\.google\.com/.test(badUrl.json?.data?.content ?? ''), '/calendar url: refuses a URL that is not on script.google.com', badUrl.text);
 
-  const connect = await post(slash('calendar', sub('connect', { url: scriptUrl })));
-  check(connect.json?.type === 5, '/calendar connect answers at once with a deferred reply', connect.text);
+  const connect = await post(slash('calendar', opts({ url: scriptUrl })));
+  check(connect.json?.type === 5, '/calendar url: answers at once with a deferred reply', connect.text);
   const edit = await waitFor(() => received.find((r) => r.method === 'PATCH' && r.url === '/api/webhooks/app1/smoke-token/messages/@original'));
   check(/Connected as smoke@example\.com/.test(edit?.body.content ?? ''), 'the deferred reply is edited with the result of the ping', JSON.stringify(edit));
   const pingCall = scriptCalls.find((c) => c.action === 'ping');

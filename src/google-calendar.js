@@ -100,7 +100,7 @@ function failure(r) {
     return { ok: false, retryable: false, error: 'Google Calendar: the Google Calendar API is not turned on for the bot\'s Google Cloud project. Tell the server admin.' };
   }
   if (status === 403 && /insufficientPermissions|ACCESS_TOKEN_SCOPE_INSUFFICIENT/i.test(reason + detail)) {
-    return { ok: false, retryable: false, error: 'Google Calendar: the bot was not given calendar permission. Reconnect with `/calendar connect` and leave every box ticked.' };
+    return { ok: false, retryable: false, error: 'Google Calendar: the bot was not given calendar permission. Reconnect with `/calendar` and leave every box ticked.' };
   }
   if (status === 404 || status === 410) return { ok: false, retryable: false, error: 'Google Calendar: the event was not found (it may have been deleted in Google Calendar).' };
   return { ok: false, retryable: false, error: `Google Calendar: Google refused the request (HTTP ${status}${detail ? `: ${detail}` : ''}).` };

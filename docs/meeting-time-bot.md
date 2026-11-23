@@ -41,9 +41,9 @@ Behaviour worth knowing:
 When a meeting organizer schedules a meeting, the bot can also create a Google Calendar event **in that meeting organizer's own Google calendar**, with a Google Meet link, and Google emails the invite to a guest team. `update` changes the same event and `cancel` deletes it (guests get Google's update and cancellation emails), together with the Discord meeting and its reminders.
 
 ```
-/calendar connect url:<your Apps Script web app URL>      (once per meeting organizer; /calendar disconnect, /calendar status)
+/calendar url:<your Apps Script web app URL>      (once per meeting organizer; plain /calendar shows status with a Disconnect button)
 /add-team team:Design emails:a@gmail.com, b@gmail.com   (commas, semicolons or spaces; creates the team, you own it)
-/remove-team-member, /show-teams, /delete-team
+/remove-team-member team:Design emails:...  (or all:True to delete the whole team), /show-teams
 /new-meeting ... [duration:90min] [team:Design | team:none] [calendar:false] [meet:false] [reuse:false]
 ```
 

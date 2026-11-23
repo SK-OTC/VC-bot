@@ -1,12 +1,14 @@
-// /recording setup | list | delete: named recording setups (where a recording's transcript, summary and "recording ready" link go),
-// and planRecordingSetup, which /new-meeting, /update-meeting and /add-update-preset use to check and describe a meeting's choice.
+// /recording setup | voice-channel | list | delete. Named recording setups say where a recording's transcript, summary and "recording
+// ready" link go (the Default one also carries the server's save/post switches); voice-channel (in setup-commands.js) says which
+// voice channels may be recorded. Also planRecordingSetup, which /new-meeting, /update-meeting and /add-update-preset use to check and
+// describe a meeting's choice.
 //
 // Only people with Manage Server can change setups. Every channel that is newly set is checked against Discord and gets a real
 // message when the setup is saved (so a missing permission shows up now, not after a meeting), in the order private, summary, link:
 // if one fails, nothing is saved and the more public channels have not been told anything.
 import { fail, hasManagePerms, reply } from './replies.js';
-import { NEEDS_MANAGE, TEXT_TYPES, channelProblem, respondLater } from './setup-commands.js';
-import { getRecordingSetup, getTranscriptSettings, resolveRouting } from './recording-store.js';
+import { NEEDS_MANAGE, TEXT_TYPES, channelProblem, cmdRecordingVoiceChannel, removeVoiceChannel, respondLater, voiceChannelLines } from './setup-commands.js';
+import { getRecordingSetup, getTranscriptSettings, resolveRouting, saveTranscriptSettings } from './recording-store.js';
 import {
   DEFAULT_SETUP_KEY,
   DEFAULT_SETUP_NAME,
@@ -51,7 +53,7 @@ export function describeSetup(s, def = null) {
   const privateId = s.private_channel_id || (!isDefault && def?.private_channel_id) || null;
   return [
     `**${plainName(s.name)}**${s.builtin ? ' (built in: nothing saved yet)' : ''}`,
-    `• Transcript file: ${ch('private_channel_id', 'the usual transcript channel (`/transcript-settings` destination, else the voice channel\'s `/setup-recording` channel, else the meeting\'s channel)')}`,
+    `• Transcript file: ${ch('private_channel_id', 'the channel where the recording is started (for a scheduled meeting: the meeting\'s channel)')}`,
     `• Summary and its link: ${ch('summary_channel_id', 'with the transcript')}`,
     `• Recording-ready link: ${ch('link_channel_id', 'not posted')}`,
     `• Audio: ${s.audio ? (privateId ? `posted in <#${privateId}>` : 'on, but there is no private channel, so it is not kept') : "not posted here (the voice channel's backup channel gets it, if it has one)"}`,
@@ -59,11 +61,11 @@ export function describeSetup(s, def = null) {
 }
 
 const postingOffNote = (settings) =>
-  settings.post ? '' : '\nNote: posting is off in `/transcript-settings`, so no channel gets transcripts or summaries until it is turned back on (the summary link goes privately to whoever started a recording).';
+  settings.post ? '' : '\nNote: posting is off for the whole server (`/recording setup name:Default post:True` turns it back on), so no channel gets transcripts or summaries (the summary link goes privately to whoever started a recording).';
 
 /** The routing a meeting in `meetingChannelId` would get with this setup, in one short phrase. */
 function routeSummary(route) {
-  if (!route.post) return 'posting is off in `/transcript-settings`, so nothing is posted in a channel';
+  if (!route.post) return 'posting is off for the whole server, so nothing is posted in a channel';
   const at = (id) => (id ? `<#${id}>` : 'nowhere');
   const parts = [`transcript → ${at(route.privateChannelId)}`];
   parts.push(route.summaryChannelId !== route.privateChannelId ? `summary → ${at(route.summaryChannelId)}` : 'summary with the transcript');
@@ -102,7 +104,7 @@ export async function planRecordingSetup(ctx, { location, requested, typed = fal
   if (!recorder) {
     lines.push('Recording: not available (recording is not set up on this bot).');
   } else if (!vcSetup) {
-    lines.push(`Recording: <#${link.channelId}> is not set up for recording, so this meeting will **not** be recorded. A server admin can allow it with \`/setup-recording\`.`);
+    lines.push(`Recording: <#${link.channelId}> is not set up for recording, so this meeting will **not** be recorded. A server admin can allow it with \`/recording voice-channel\`.`);
   } else {
     const r = sessionRouting(setup);
     const route = resolveRouting({
@@ -117,12 +119,31 @@ export async function planRecordingSetup(ctx, { location, requested, typed = fal
 
 // ---------- /recording ----------
 
+const onOff = (v) => (v ? 'on' : 'off');
+
+/** The server-wide save/post switches in plain words, including what each combination means. */
+export function describeSettings(s) {
+  const lines = [
+    `• Save (whole server): **${onOff(s.save)}**. ${s.save ? 'Transcripts and summaries are kept, with a private web page (and a question box) for each.' : 'Nothing is kept: there is no web page, no question box and no link.'}`,
+    `• Post (whole server): **${onOff(s.post)}**. ${s.post ? 'Transcripts and summaries are posted in the channels above.' : 'Nothing is posted in any channel, whatever a recording setup says.'}`,
+  ];
+  if (!s.post && s.save) {
+    lines.push(
+      'Because posting is off, the summary and its web link are sent in a private message to the person who started the recording. ' +
+        'A recording started from a scheduled meeting has no such person, so nothing is delivered for it (it is still saved).',
+    );
+  }
+  if (s.post && !s.save) lines.push('Because saving is off, the summary is posted in full (there is no web link to carry the rest).');
+  return lines.join('\n');
+}
+
 export async function cmdRecording(ctx, sub, o) {
   if (!hasManagePerms(ctx.interaction)) return fail(NEEDS_MANAGE);
   if (sub === 'setup') return cmdRecordingSetup(ctx, o);
+  if (sub === 'voice-channel') return cmdRecordingVoiceChannel(ctx, o);
   if (sub === 'list') return cmdRecordingList(ctx);
   if (sub === 'delete') return cmdRecordingDelete(ctx, o);
-  return fail('Use `/recording setup`, `/recording list` or `/recording delete`.');
+  return fail('Use `/recording setup`, `/recording voice-channel`, `/recording list` or `/recording delete`.');
 }
 
 async function cmdRecordingSetup(ctx, o) {
@@ -134,16 +155,29 @@ async function cmdRecordingSetup(ctx, o) {
   const isDefault = nameKey(typed) === DEFAULT_SETUP_KEY;
   const name = isDefault ? DEFAULT_SETUP_NAME : typed;
 
+  const settingsChanging = o.save !== undefined || o.post !== undefined;
+  if (settingsChanging && !isDefault) {
+    return fail('`save` and `post` apply to the whole server, so they are set on the Default setup: `/recording setup name:Default save:… post:…`. Nothing was saved.');
+  }
+  const settings = await getTranscriptSettings(db, guildId);
+  const nextSettings = { save: o.save === undefined ? settings.save : Boolean(o.save), post: o.post === undefined ? settings.post : Boolean(o.post) };
+  if (!nextSettings.save && !nextSettings.post) {
+    return fail('Saving and posting cannot both be off: every transcript and summary would be thrown away. Leave at least one on.');
+  }
+
   const existing = await getNamedSetup(db, guildId, name);
   const def = await getDefaultSetup(db, guildId);
-  const changing = ['private_channel', 'summary_channel', 'link_channel', 'audio', 'clear'].some((k) => o[k] !== undefined);
-  if (!changing && (existing || isDefault)) {
-    const s = existing ?? def;
-    const settings = await getTranscriptSettings(db, guildId);
-    return reply(describeSetup(s, def) + postingOffNote(settings) + '\nChange it by adding channel options to this command.', { ephemeral: true });
+  const namedChanging = ['private_channel', 'summary_channel', 'link_channel', 'audio', 'clear'].some((k) => o[k] !== undefined);
+  const settingsText = (s) => (isDefault ? `\n${describeSettings(s)}` : postingOffNote(s));
+  if (!namedChanging && !settingsChanging && (existing || isDefault)) {
+    return reply(describeSetup(existing ?? def, def) + settingsText(settings) + '\nChange it by adding options to this command.', { ephemeral: true });
+  }
+  if (!namedChanging && settingsChanging) {
+    await saveTranscriptSettings(db, guildId, nextSettings, userId, nowSec);
+    return reply(`Saved.\n${describeSetup(def)}\n${describeSettings(nextSettings)}`, { ephemeral: true });
   }
   if (!existing && !isDefault && (await countNamedSetups(db, guildId)) >= MAX_NAMED_SETUPS) {
-    return fail(`This server already has ${MAX_NAMED_SETUPS} recording setups. Delete one with \`/recording delete\` first.`);
+    return fail(`This server already has ${MAX_NAMED_SETUPS} recording setups. Delete one with \`/recording delete name:\` first.`);
   }
 
   const next = {
@@ -182,12 +216,12 @@ async function cmdRecordingSetup(ctx, o) {
       { guildId, name, privateChannelId: next.private_channel_id, summaryChannelId: next.summary_channel_id, linkChannelId: next.link_channel_id, audio: next.audio, createdBy: userId },
       nowSec,
     );
+    if (settingsChanging) await saveTranscriptSettings(db, guildId, nextSettings, userId, nowSec);
     const saved = { ...next, name, name_key: nameKey(name) };
-    const settings = await getTranscriptSettings(db, guildId);
     const use = isDefault
-      ? 'Meetings that pick no recording setup (or one that no longer exists) use this one, and so does `/start-recording`.'
+      ? '`/start-recording` and meetings that pick no recording setup (or one that no longer exists) use this one.'
       : `Pick it for a meeting with \`recording_setup:${name}\` on \`/new-meeting\` (the location must be a Discord voice channel link). Blank channels come from the Default setup.`;
-    return `${r.updated ? 'Updated' : 'Saved'} the recording setup.\n${describeSetup(saved, isDefault ? null : def)}${warnings.map((w) => `\nWarning: ${w}`).join('')}${postingOffNote(settings)}\n${use}`;
+    return `${r.updated ? 'Updated' : 'Saved'} the recording setup.\n${describeSetup(saved, isDefault ? null : def)}${warnings.map((w) => `\nWarning: ${w}`).join('')}${settingsText(nextSettings)}\n${use}`;
   };
   if (!fresh.length) return reply(await save(), { ephemeral: true });
 
@@ -217,6 +251,10 @@ async function cmdRecordingSetup(ctx, o) {
   });
 }
 
+// Discord rejects messages over 2000 characters: the setups get most of the room, the voice channels the rest.
+const LIST_SETUPS_BUDGET = 1150;
+const LIST_TOTAL_BUDGET = 1850;
+
 async function cmdRecordingList(ctx) {
   const { db, guildId } = ctx;
   const all = await listNamedSetups(db, guildId);
@@ -227,18 +265,31 @@ async function cmdRecordingList(ctx) {
   const shown = [];
   let used = 0;
   for (const b of blocks) {
-    if (used + b.length + 2 > 1700) break;
+    if (used + b.length + 2 > LIST_SETUPS_BUDGET) break;
     shown.push(b);
     used += b.length + 2;
   }
   const more = blocks.length - shown.length;
-  const tail = more ? `\n…and ${more} more. Use \`/recording setup name:<name>\` to see one.` : '';
-  const intro = others.length ? '' : '\nNo named setups yet: every recording uses the Default. Add one with `/recording setup`.';
-  return reply(`**Recording setups**\n${shown.join('\n\n')}${tail}${intro}${postingOffNote(settings)}`, { ephemeral: true });
+  const setupsPart =
+    `**Recording setups**\n${shown.join('\n\n')}` +
+    (more ? `\n…and ${more} more. Use \`/recording setup name:<name>\` to see one.` : '') +
+    (others.length ? '' : '\nNo named setups yet: every recording uses the Default. Add one with `/recording setup`.');
+  const settingsPart = `\n\n**Whole server** (change on \`/recording setup name:Default\`): save **${onOff(settings.save)}**, post **${onOff(settings.post)}**.`;
+  const vc = await voiceChannelLines(db, guildId, Math.max(200, LIST_TOTAL_BUDGET - setupsPart.length - settingsPart.length - 60));
+  const vcPart = vc.total
+    ? `\n\n**Voice channels that may be recorded**\n${vc.shown.join('\n')}` + (vc.more ? `\n…and ${vc.more} more. Use \`/recording voice-channel voice_channel:<channel>\` to see one.` : '')
+    : '\n\n**Voice channels that may be recorded**\nNone yet. Allow one with `/recording voice-channel`.';
+  return reply(setupsPart + settingsPart + vcPart, { ephemeral: true });
 }
 
 async function cmdRecordingDelete(ctx, o) {
   const { db, guildId } = ctx;
+  const hasName = o.name !== undefined && tidy(o.name) !== '';
+  const hasVoice = o.voice_channel !== undefined;
+  if (hasName === hasVoice) {
+    return fail('Give one of these: `name` (a recording setup to delete) or `voice_channel` (a voice channel that may no longer be recorded).');
+  }
+  if (hasVoice) return removeVoiceChannel(ctx, o.voice_channel);
   const name = tidy(o.name);
   const s = await getNamedSetup(db, guildId, name);
   if (!s) {
@@ -246,7 +297,7 @@ async function cmdRecordingDelete(ctx, o) {
   }
   await deleteNamedSetup(db, guildId, s.name);
   if (s.name_key === DEFAULT_SETUP_KEY) {
-    return reply('Deleted the saved Default setup. Recordings that use the Default now go where they went before named setups (see `/transcript-settings`).', { ephemeral: true });
+    return reply('Deleted the saved Default setup. Recordings that use the Default now go to the channel where they are started (the save and post switches are kept).', { ephemeral: true });
   }
   const users = await countSetupUsers(db, guildId, s.name);
   const who = users.meetings || users.presets

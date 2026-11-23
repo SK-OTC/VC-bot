@@ -71,13 +71,13 @@ test('other kinds of location do nothing, and the start message still goes out',
   }
 });
 
-test('refused when: another server, no /setup-recording, not a voice channel, a stage channel, or the bot cannot see it', async () => {
+test('refused when: another server, not allowed with /recording voice-channel, not a voice channel, a stage channel, or the bot cannot see it', async () => {
   const cases = [
     [link('888888888888888888', '666666666666666666'), /another server/],
-    [link(GUILD, VC_NO_SETUP), /no \/setup-recording/],
+    [link(GUILD, VC_NO_SETUP), /not allowed with \/recording voice-channel/],
     [link(GUILD, TEXT), /not a voice channel/],
     [link(GUILD, '777777777777777777'), /not a voice channel/],
-    [link(GUILD, '121212121212121212'), /no \/setup-recording/], // unknown channel: stops at the setup gate, never reaching Discord
+    [link(GUILD, '121212121212121212'), /not allowed with \/recording voice-channel/], // unknown channel: stops at the setup gate, never reaching Discord
   ];
   for (const [location, why] of cases) {
     const t = setup();
