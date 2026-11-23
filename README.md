@@ -308,7 +308,7 @@ different licence for its hosted service; the Hugging Face model card governs th
   path, the weekly keep-alive, `/calendar disconnect` and `/calendar status`, and that no token, code or secret reaches a log.
 * **Scheduled auto-join:** `test/auto-record.test.js` (which links start a recording and which do nothing, the checks, not
   starting twice) and `test/voice-link.test.js` (what counts as a link).
-* **Prompts:** `test/prompts.test.js` pins every behaviour the shortened summary prompts must still ask for.
+* **Prompts:** `test/prompts.test.js` pins every behaviour the shortened summary prompts must still ask for, including the relevance and tone rule (meeting content first; small talk and jokes left out unless the meeting itself is casual; formal, serious tone) and the notes format modelled on the owner's example notes: a title line, sections by topic or by person (with "Outstanding items"), then the fixed **Decisions**, **Action items** and **Open questions** sections the verifier checks. Two invented few-shot examples (a work meeting and a casual one) show it (about 1,000 extra tokens per final request; a meeting is summarised in one request only while prompt + transcript stay as large as a single request was before).
 * **Python:** `pipeline/test_parakeet_worker.py` (8 tests of the window splitting and the worker protocol). `npm test` does not
   run it; `record.yml` does, before each recording.
 
@@ -369,7 +369,7 @@ bearer token) to call the Worker's recorder API:
 | Call | Used for |
 |------|----------|
 | `GET /api/sessions/<id>/stop` | Polled every 15 s: has someone asked it to stop? |
-| `GET /api/sessions/<id>/config` | The `/setup-recording` settings for this session's voice channel |
+| `GET /api/sessions/<id>/config` | Where this session's results go (its `/setup-recording`, `/transcript-settings` and named recording setup); 409 once the session has ended |
 | `POST /api/sessions/<id>/finish` | Tells the Worker the job ended (done or failed), freeing the channel |
 | `GET /api/ai-budget` | Whether today's shared Neuron budget still allows a Cloudflare summary |
 | `POST /api/transcripts` | Stores the finished transcript and returns the private link |
@@ -386,7 +386,7 @@ instead of your `wrangler login`, so commands such as `npm run db:migrate:remote
 
 | Command | What it does |
 |---------|--------------|
-| `/start-recording [channel]` | Records the voice channel you are in (or the one you pick). The Worker starts the GitHub job; the bot joins within about a minute. The channel where you typed the command is remembered: that is where the transcript and summary go (see `/transcript-settings`) |
+| `/start-recording [channel]` | Records the voice channel you are in (or the one you pick). The Worker starts the GitHub job; the bot joins within about a minute. It uses the Default recording setup (below). The channel where you typed the command is remembered: that is where the transcript and summary go when nothing else is set (see `/transcript-settings`) |
 | `/stop-recording [channel] [force]` | The bot leaves within about 15 seconds, then transcribes and posts as usual. Only the person who started it, or someone with Manage Server, can stop it. `force:True` clears a stuck recording |
 
 Anyone in the server can start a recording, but only in a voice channel an admin has set up (below). Otherwise
@@ -398,16 +398,58 @@ When a scheduled meeting's start time comes (the cron runs once a minute, and a 
 the bot checks the meeting's **`location`**. If it is a link to a Discord voice channel, it starts a recording exactly as
 `/start-recording` would. The link must be the whole location, in this form (what Discord's "Copy Link" gives):
 `https://discord.com/channels/<server id>/<voice channel id>`. Anything else (a Google Meet or Zoom link, a message link, a
-`<#channel>` mention, plain text) does nothing, and the normal "starting now" message is posted either way.
+`<#channel>` mention, plain text) never records, and the normal "starting now" message is posted with nothing added.
 
-It also requires all of these, and otherwise silently does nothing (the reason is written to the Worker log):
-the link is for the meeting's own server; the channel is a voice channel the bot can see; the channel has a
-`/setup-recording`; nothing is already being recorded in this server (so the bot never joins a second call or rejoins one it is
-in); and this occurrence of the meeting was not already handled (a job can be delivered twice). The results go to the meeting's
-own channel (see `/transcript-settings`). Who can schedule meetings, and so who can trigger a recording, is whatever you allow in
-Discord's command permissions; the `/setup-recording` gate still decides which voice channels can ever be recorded. The bot posts
-its usual notice in the voice channel when it joins. If it cannot Connect, or the channel is full, the recorder finds out only
-when it tries to join and the session ends as failed.
+It also requires all of these: the link is for the meeting's own server; the channel is a voice channel the bot can see; the
+channel has a `/setup-recording`; nothing is already being recorded in this server (so the bot never joins a second call or
+rejoins one it is in). **The outcome is shown** in one line under the "starting now" message: `🔴 Recording: …` with the
+recording setup used, or `⚠️ Not recorded: …` with a fixed reason (never an error text). The `/new-meeting` reply already says
+whether the meeting will record, with which setup, and where its results will go.
+
+**Never twice.** The database allows one recording session per meeting occurrence (meeting + start time). A start job delivered
+twice, or retried because its message failed, finds that session and says "already started" instead of recording again. A GitHub
+job that is re-run after its session ended is refused by the Worker (HTTP 409) and exits without joining or posting.
+
+Who can schedule meetings, and so who can trigger a recording, is whatever you allow in Discord's command permissions; the
+`/setup-recording` gate still decides which voice channels can ever be recorded. The bot posts its usual notice in the voice
+channel when it joins. If it cannot Connect, or the channel is full, the recorder finds out only when it tries to join and the
+session ends as failed.
+
+### Named recording setups: `/recording setup`, where each kind of meeting's results go
+
+| Command (needs Manage Server) | What it does |
+|---------|--------------|
+| `/recording setup name [private_channel] [summary_channel] [link_channel] [audio] [clear]` | Creates or changes a named setup. With only `name`, shows it |
+| `/recording list` | Shows every setup, the Default first |
+| `/recording delete name` | Deletes one. Meetings and presets that name it use the Default instead (and say so) |
+
+| Destination | What goes there | Blank means |
+|---|---|---|
+| `private_channel` | The transcript file (and the audio files, with `audio:True`) | The Default setup's private channel, else the usual transcript channel (`/transcript-settings` below) |
+| `summary_channel` | The summary message with the link to the summary page | The Default's summary channel, else the same channel as the transcript |
+| `link_channel` | "The recording is ready" with a Discord link to the transcript message. Only people who can see the private channel can open it, so nothing private is posted here | The Default's link channel, else no link is posted |
+
+* **The Default setup** (`name:Default`) is used by every meeting that picks no setup, picks one that no longer exists, and by
+  `/start-recording`. Until you save it, it is built in with every channel blank, which is exactly the behaviour from before named
+  setups. Other setups take their blank channels from it, so a setup that only sets a summary channel still sends the transcript
+  to the Default's private channel.
+* **Picking one:** `/new-meeting … location:<voice channel link> recording_setup:<name>` (autocomplete lists setups only when the
+  location is a Discord voice channel link; any other location with `recording_setup` is refused). Presets store one too
+  (`/add-update-preset … recording_setup:<name>`), and `/update-meeting` can change it. A name that does not exist falls back to
+  the Default with a warning in the reply; a setup deleted later falls back at the start, and the start message says so.
+* **Checked when you save it**, like `/setup-recording`: each new channel must be a text channel in this server that the bot can
+  see, and gets a real message (private first, the most public last). If one fails, nothing is saved. A private channel that does
+  not hide itself from @everyone is saved with a warning.
+* **Fixed per recording:** the channels are copied onto the recording session when it starts, so editing a setup mid-meeting does
+  not move that meeting's transcript.
+* **Failures never leak private content.** A summary channel the bot cannot post in: the private channel says so and gets the
+  summary. A link channel that fails is only logged. Audio only ever goes to a channel named as private (with `audio:True`), or to
+  the voice channel's backup channel as before. The transcript file never goes to the summary or link channel.
+* `/transcript-settings post:false` still wins over every named setup: nothing is posted in any channel.
+* Up to 25 setups per server; names up to 50 characters.
+
+The summary link opens the summary page, which has a question box over the transcript. Anyone who can see the summary channel can
+therefore ask questions about the meeting. Pick a summary channel whose readers may know what was said.
 
 ### Setting up a server: `/setup-recording` (no GitHub secret to edit)
 

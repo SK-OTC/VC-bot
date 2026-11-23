@@ -53,6 +53,9 @@ export function parseSessionConfig(env, remote = null) {
     if (post && !ID_RE.test(String(team.transcriptChannelId ?? ''))) problems.push('there is no channel to post the transcript in (TEAM_CONFIG entry needs transcriptChannelId, or start the recording with /start-recording)');
     if (team.backupChannelId && !ID_RE.test(String(team.backupChannelId))) problems.push('backupChannelId must be a channel ID');
     if (team.backupChannelId && team.backupChannelId === team.transcriptChannelId) problems.push('backupChannelId must be a different channel from transcriptChannelId');
+    for (const f of ['summaryChannelId', 'linkChannelId', 'audioChannelId']) {
+      if (team[f] && !ID_RE.test(String(team[f]))) problems.push(`${f} must be a channel ID`);
+    }
   }
 
   const sessionId = String(env.SESSION_ID ?? '').trim();
@@ -83,6 +86,11 @@ export function parseSessionConfig(env, remote = null) {
       backupChannelId: team.backupChannelId ? String(team.backupChannelId) : '',
       glossary: String(team.glossary || ''),
       language: String(team.language || 'en'),
+      // Named recording setup (/recording setup). Each '' when unused; none of them applies while posting is off.
+      summaryChannelId: post && team.summaryChannelId ? String(team.summaryChannelId) : '',
+      linkChannelId: post && team.linkChannelId ? String(team.linkChannelId) : '',
+      audioChannelId: team.audioChannelId ? String(team.audioChannelId) : '',
+      setupName: String(team.setupName || ''),
     },
     maxMinutes,
     startWaitMinutes,

@@ -65,6 +65,7 @@ export function presetText(p, { header = 'Preset', teamName = null } = {}) {
   lines.push(`Google Calendar: ${p.calendar === 0 ? 'off' : 'on (if the person scheduling it is connected)'}`);
   lines.push(`Google Meet link: ${p.gcal_meet === 0 ? 'no' : 'yes'}`);
   lines.push(`Timezone: ${p.timezone ?? "the scheduler's saved timezone"}`);
+  lines.push(`Recording setup: ${p.recording_setup ? `**${plainName(p.recording_setup)}**` : 'Default'} (used only when the location is a Discord voice channel link)`);
   return lines.join('\n');
 }
 
@@ -72,8 +73,51 @@ export function reminderText(m) {
   return `${roleMention(m)}Heads up: **${m.name}** kicks off ${ts(m.start_at, 'R')} (${ts(m.start_at, 't')})` + whereLine(m);
 }
 
-export function startText(m) {
-  return `${roleMention(m)}**${m.name}** is starting now. See you there!` + whereLine(m);
+/** The start message. `recordingLine` (from recordingStatusLine) is added under it when the meeting records, or should have. */
+export function startText(m, { recordingLine = null } = {}) {
+  return `${roleMention(m)}**${m.name}** is starting now. See you there!` + whereLine(m) + (recordingLine ? `\n${recordingLine}` : '');
+}
+
+/** Text a server admin typed (a setup name), safe inside **bold**: Discord markdown characters are escaped. */
+export const plainName = (text) => String(text ?? '').replace(/[\\*_~`|>]/g, '\\$&');
+
+/**
+ * One visible line about recording for the start message, from autoRecord's result, or null when there is nothing to say (the
+ * location is not a Discord channel link, or recording is not set up on this bot at all). Fixed sentences only: never an error text.
+ */
+export function recordingStatusLine(r) {
+  if (!r || !r.applies || r.code === 'no_recorder') return null;
+  const vc = r.channelId ? `<#${r.channelId}>` : 'the voice channel';
+  const setup = r.setupName ? ` (recording setup: **${plainName(r.setupName)}**)` : '';
+  const fallback = r.fallback
+    ? `\n⚠️ The recording setup **${plainName(r.fallback.requested)}** no longer exists, so the **${plainName(r.setupName ?? 'Default')}** setup is used.`
+    : '';
+  switch (r.code) {
+    case 'started':
+      return `🔴 Recording: the bot is joining ${vc} to record and transcribe this meeting${setup}. Leave the call if you do not agree.${fallback}`;
+    case 'already':
+      return r.alreadyStatus === 'failed'
+        ? '⚠️ Not recorded: the recorder could not be started.'
+        : `🔴 Recording: this meeting's recording in ${vc} has already been started${setup}.`;
+    case 'no_setup':
+      return `⚠️ Not recorded: ${vc} is not set up for recording. A server admin can allow it with \`/setup-recording\`.`;
+    case 'other_server':
+      return '⚠️ Not recorded: the location links to a channel in another server.';
+    case 'busy_channel':
+      return `⚠️ Not recorded again: ${vc} is already being recorded.`;
+    case 'busy_server':
+      return '⚠️ Not recorded: another recording is already running in this server (the bot records one call at a time).';
+    case 'cannot_see':
+      return `⚠️ Not recorded: I can't see ${vc}. Give the bot View Channel and Connect there.`;
+    case 'discord_error':
+      return `⚠️ Not recorded: Discord did not answer when I checked ${vc}.`;
+    case 'not_voice':
+      return '⚠️ Not recorded: the location is not a voice channel.';
+    case 'launch_failed':
+      return `⚠️ Not recorded: the recorder could not be started.${fallback}`;
+    default:
+      return null;
+  }
 }
 
 export function cancelText(m) {

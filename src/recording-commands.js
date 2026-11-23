@@ -2,7 +2,8 @@
 // connection itself); stopping sets the flag the recorder checks every 15 seconds, so it leaves, then transcribes.
 import { MessageFlags, ResponseType } from './discord.js';
 import { canManageOwner, fail, reply } from './replies.js';
-import { endSession, failStaleSessions, findLiveSessions, getRecordingSetup, getTranscriptSettings, requestStop } from './recording-store.js';
+import { endSession, failStaleSessions, findLiveSessions, getRecordingSetup, getTranscriptSettings, requestStop, resolveRouting } from './recording-store.js';
+import { resolveNamedSetup, sessionRouting } from './named-setups.js';
 import { launchSession, openSession } from './recording-start.js';
 
 const SNOWFLAKE_RE = /^\d{17,20}$/;
@@ -34,21 +35,28 @@ export async function cmdStartRecording(ctx, o) {
     return fail(`<#${channelId}> is not set up for recording yet. A server admin can set it up with \`/setup-recording\`.`);
   }
 
-  // The channel where this command was typed is where the transcript goes, unless /transcript-settings or the voice channel's
-  // setup names another one (see resolveTranscriptTarget).
-  const made = await openSession(db, { channelId, guildId, startedBy: userId, startChannelId: interaction.channel_id ?? null }, nowSec);
+  // The channel where this command was typed is where the transcript goes, unless /transcript-settings, the server's Default
+  // recording setup (/recording setup name:Default) or the voice channel's setup names another one (see resolveRouting).
+  // A recording started by hand is not a meeting, so it always uses the Default setup.
+  const { setup: named } = await resolveNamedSetup(db, guildId, null);
+  const routing = sessionRouting(named);
+  const made = await openSession(db, { channelId, guildId, startedBy: userId, startChannelId: interaction.channel_id ?? null, routing }, nowSec);
   if (made.conflict) {
     return fail(`<#${channelId}> is already being recorded. End that recording with \`/stop-recording\` first.`);
   }
   const id = made.id;
   const settings = await getTranscriptSettings(db, guildId);
-  const whereResults = !settings.post
+  const route = resolveRouting({
+    settings,
+    setup,
+    session: { start_channel_id: interaction.channel_id ?? null, private_channel_id: routing.privateChannelId, summary_channel_id: routing.summaryChannelId, link_channel_id: routing.linkChannelId, audio_channel_id: routing.audioChannelId },
+  });
+  const here = (cid) => (cid ? `<#${cid}>` : 'this channel');
+  const whereResults = !route.post
     ? 'Nothing is posted to a channel: the summary link is sent to you in a private message.'
-    : settings.destination
-      ? `The transcript and summary go to <#${settings.destination}>`
-      : setup.transcript_channel_id
-        ? `The transcript and summary go to <#${setup.transcript_channel_id}>`
-        : `The transcript and summary go to ${interaction.channel_id ? `<#${interaction.channel_id}>` : 'this channel'}`;
+    : route.summaryChannelId && route.summaryChannelId !== route.privateChannelId
+      ? `The transcript goes to ${here(route.privateChannelId)} and the summary to ${here(route.summaryChannelId)}`
+      : `The transcript and summary go to ${here(route.privateChannelId)}`;
 
   const run = async () => {
     const r = await launchSession(db, recorder, { id, channelId }, nowSec);

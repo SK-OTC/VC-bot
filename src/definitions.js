@@ -35,6 +35,11 @@ const scheduleOptions = {
     ],
   }),
   ping: opt(T.ROLE, 'ping', 'Role to mention when the meeting is scheduled, at the reminder and at the start'),
+  // Only offered (autocomplete) when the location is a Discord voice channel link; the handlers refuse it for any other location.
+  recording_setup: opt(T.STRING, 'recording_setup', 'Recording setup, for a Discord voice channel location only (default: Default)', {
+    max_length: 50,
+    autocomplete: true,
+  }),
 };
 
 // Discord's role picker takes one role per option, so extra roles get their own options.
@@ -45,7 +50,7 @@ const pingOptions = PING_OPTION_NAMES.map((name, i) =>
 );
 
 // Every command is top-level, so each shows up on its own in Discord's slash menu.
-// Only /calendar still has subcommands (connect, disconnect, status).
+// Only /calendar (connect, disconnect, status) and /recording (setup, list, delete) have subcommands.
 const guestEmails = opt(T.STRING, 'emails', 'One or many email addresses, separated by commas, semicolons or spaces', {
   required: true,
   max_length: 6000,
@@ -75,6 +80,7 @@ export const COMMANDS = [
       scheduleOptions.team,
       scheduleOptions.calendar,
       scheduleOptions.meet,
+      scheduleOptions.recording_setup,
       opt(T.BOOLEAN, 'reuse', 'Reuse the settings of a saved preset or past meeting with this name (default: yes)'),
     ],
   },
@@ -97,6 +103,7 @@ export const COMMANDS = [
       scheduleOptions.team,
       scheduleOptions.calendar,
       scheduleOptions.meet,
+      scheduleOptions.recording_setup,
     ],
   },
   {
@@ -127,6 +134,7 @@ export const COMMANDS = [
       scheduleOptions.team,
       scheduleOptions.calendar,
       scheduleOptions.meet,
+      scheduleOptions.recording_setup,
     ],
   },
   {
@@ -205,6 +213,36 @@ export const COMMANDS = [
     contexts: [0],
     default_member_permissions: MANAGE_SERVER,
     options: [opt(T.CHANNEL, 'voice_channel', 'The voice channel to remove', { required: true, channel_types: VOICE_ONLY })],
+  },
+  {
+    // Named recording setups. Admin only, like /setup-recording (the handler checks the permission again).
+    name: 'recording',
+    description: 'Named recording setups: where transcripts, summaries and recording links go (admins only)',
+    contexts: [0],
+    default_member_permissions: MANAGE_SERVER,
+    options: [
+      opt(T.SUB_COMMAND, 'setup', 'Create or change a named recording setup (just the name = show it)', {
+        options: [
+          opt(T.STRING, 'name', 'Setup name. "Default" is used by meetings that pick none', { required: true, max_length: 50, autocomplete: true }),
+          opt(T.CHANNEL, 'private_channel', 'Private text channel for the transcript file (and the audio, if on)', { channel_types: TEXT_ONLY }),
+          opt(T.CHANNEL, 'summary_channel', 'Text channel for the summary and its link (default: with the transcript)', { channel_types: TEXT_ONLY }),
+          opt(T.CHANNEL, 'link_channel', 'Text channel for a "recording ready" link to the transcript (default: none)', { channel_types: TEXT_ONLY }),
+          opt(T.BOOLEAN, 'audio', 'Also post the audio files in the private channel (default: off)'),
+          opt(T.STRING, 'clear', 'Make a channel blank again (blank = taken from the Default setup)', {
+            choices: [
+              { name: 'private_channel', value: 'private_channel' },
+              { name: 'summary_channel', value: 'summary_channel' },
+              { name: 'link_channel', value: 'link_channel' },
+              { name: 'all channels', value: 'all' },
+            ],
+          }),
+        ],
+      }),
+      opt(T.SUB_COMMAND, 'list', 'Show every named recording setup'),
+      opt(T.SUB_COMMAND, 'delete', 'Delete a recording setup (meetings that use it fall back to Default)', {
+        options: [opt(T.STRING, 'name', 'Which setup', { required: true, max_length: 50, autocomplete: true })],
+      }),
+    ],
   },
   {
     name: 'start-recording',

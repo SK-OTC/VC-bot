@@ -13,8 +13,14 @@ import { batchAttachments } from './stop.mjs';
 /**
  * speakers: [{ label, name, files }]     (name may be null)
  * io: { postTranscript({content, file:{name, data}}) -> {messageId}, postText(text, {replyTo}) -> {messageId},
- *       dm(text, {file}) -> {messageId} (a private message to whoever started the recording), postBackup(content, files) }
- *       (postBackup's files are { path } on disk, or { data } in memory, each with a name)
+ *       dm(text, {file}) -> {messageId} (a private message to whoever started the recording), postBackup(content, files),
+ *       and, for a named recording setup: postSummary(text) -> {messageId} (the summary channel), postLink(text) (the
+ *       recording-link channel), postAudio(content, files) (the setup's private channel, when its audio is on) }
+ *       (postBackup's and postAudio's files are { path } on disk, or { data } in memory, each with a name)
+ * Private content (the transcript file, the audio) only ever goes to the private channel, the backup channel or the starter's DMs.
+ * The summary goes to the summary channel; if that fails it goes to the private channel instead (never anywhere less private).
+ * The recording-link channel only gets a Discord link to the transcript message, which only people who can see the private
+ * channel can open.
  * Returns { ok, id, notes[], posted, fileSentTo, lost } and never throws for a posting, model, storage or backup problem: a
  * transcript that exists must be delivered. If posting the file fails it is still saved, and the file goes privately to whoever
  * started the recording or else to the backup channel. `lost` is true only when it could be kept nowhere at all.
@@ -62,6 +68,24 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
         postError = String(e?.message ?? e).slice(0, 100);
         notes.push(`could not post the transcript file: ${postError}`);
         log(`could not post the transcript file: ${postError}`);
+      }
+    }
+
+    // 1b. The "recording is ready" link, in the named setup's link channel, as soon as the transcript message exists. It is a
+    // Discord message link, so it opens only for people who can already see the private channel: nothing private is posted.
+    let linkPosted = false;
+    const linkChannelId = post ? cfg.team.linkChannelId || '' : '';
+    if (linkChannelId && linkChannelId !== cfg.team.transcriptChannelId && io.postLink) {
+      if (posted.messageId) {
+        const jump = `https://discord.com/channels/${guildId}/${cfg.team.transcriptChannelId}/${posted.messageId}`;
+        try {
+          await io.postLink(`🎙️ The recording of the **${cfg.team.name}** meeting is ready: [open the transcript](<${jump}>) · ID \`${id}\`. Only people who can see <#${cfg.team.transcriptChannelId}> can open it.`);
+          linkPosted = true;
+        } catch (e) {
+          notes.push(`could not post the recording link: ${String(e?.message ?? e).slice(0, 100)}`);
+        }
+      } else {
+        notes.push('no recording link was posted: the transcript message does not exist');
       }
     }
 
@@ -162,6 +186,30 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
       : dmUserId
         ? (content) => io.dm(content)
         : null;
+    // The summary itself goes to the named setup's summary channel, when it has one. If that channel refuses it, the private channel
+    // says so and gets the summary instead (it is the more private place); nothing ever falls back to a less private channel.
+    const summaryChannelId = post ? cfg.team.summaryChannelId || '' : '';
+    let summaryWorks = Boolean(summaryChannelId && summaryChannelId !== cfg.team.transcriptChannelId && io.postSummary);
+    let summaryIn = null; // 'summary' | 'private' (the private channel, or the starter's DMs when posting is off) | null
+    const sendSummary = send
+      ? async (content) => {
+          if (summaryWorks) {
+            try {
+              const r = await io.postSummary(content);
+              summaryIn = 'summary';
+              return r;
+            } catch (e) {
+              summaryWorks = false;
+              const why = String(e?.message ?? e).slice(0, 100);
+              notes.push(`could not post the summary in the summary channel: ${why}`);
+              await send(`I could not post the summary in <#${summaryChannelId}> (${why}), so it is posted here instead. Check that I may View Channel and Send Messages there.`).catch(() => {});
+            }
+          }
+          const r = await send(content);
+          summaryIn = summaryIn ?? 'private';
+          return r;
+        }
+      : null;
     if (!send) notes.push('nothing was delivered: posting is off and nobody started this recording (a scheduled one), so there is nobody to send the link to');
     else {
       try {
@@ -179,10 +227,10 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
         const linked = stored.ok && stored.shareUrl;
         if (linked) {
           const summaryText = summary.ok ? summary.text : body.trim() ? `Summary unavailable (${summary.reason}).` : 'Nothing could be transcribed.';
-          await send(composeSummaryMessage({ summary: summaryText, url: stored.shareUrl, expiresAt: stored.shareExpiresAt }));
+          await sendSummary(composeSummaryMessage({ summary: summaryText, url: stored.shareUrl, expiresAt: stored.shareExpiresAt }));
         } else {
-          if (summary.ok) for (const p of splitMessage(summary.text, 1900)) await send(p);
-          else if (body.trim()) await send(`Summary unavailable (${summary.reason}). The transcript is complete.`);
+          if (summary.ok) for (const p of splitMessage(summary.text, 1900)) await sendSummary(p);
+          else if (body.trim()) await sendSummary(`Summary unavailable (${summary.reason}). The transcript is complete.`);
           if (wantSave && !stored.ok) {
             const onlyCopy = !post
               ? 'The file attached to the next message is the only copy.'
@@ -202,22 +250,24 @@ export async function finishSession({ speakers, offsetSec, startedAt, cfg, engin
       }
     }
 
-    // 5. Audio backup (pilot). Only when a backup channel is configured; otherwise audio is simply deleted with the work folder.
-    if (cfg.team.backupChannelId) {
+    // 5. Audio backup (pilot). Only to the named setup's private channel (when its audio is on) or the voice channel's backup channel;
+    // with neither, audio is simply deleted with the work folder.
+    const postAudio = cfg.team.audioChannelId && io.postAudio ? io.postAudio : cfg.team.backupChannelId ? io.postBackup : null;
+    if (postAudio) {
       try {
         const files = speakers.flatMap((s) => s.files).map((f) => ({ path: f, name: path.basename(f), size: statSync(f).size }));
         const { batches, tooBig } = batchAttachments(files);
         for (let i = 0; i < batches.length; i++) {
-          await io.postBackup(i === 0 ? `Audio backup for transcript \`${id}\` (${cfg.team.name}). Speaker numbers match the transcript order.` : `(more audio, part ${i + 1} of ${batches.length})`, batches[i]);
+          await postAudio(i === 0 ? `Audio backup for transcript \`${id}\` (${cfg.team.name}). Speaker numbers match the transcript order.` : `(more audio, part ${i + 1} of ${batches.length})`, batches[i]);
         }
-        if (tooBig.length) await io.postBackup(`Not attached (over the upload limit): ${tooBig.map((f) => f.name).join(', ')}.`, []);
+        if (tooBig.length) await postAudio(`Not attached (over the upload limit): ${tooBig.map((f) => f.name).join(', ')}.`, []);
       } catch (e) {
         notes.push(`audio backup failed: ${String(e.message).slice(0, 100)}`);
         log(`audio backup failed: ${e.message}`);
       }
     }
 
-    return { ok: true, id, notes, stats: { speakers: stats.speakers.length, batches: stats.batches, failed: stats.failedBatches, fallback: stats.fallbackBatches, dropped: stats.droppedSegments }, stored: stored.ok, summarised: summary.ok, posted: post && !postError, fileSentTo, lost };
+    return { ok: true, id, notes, stats: { speakers: stats.speakers.length, batches: stats.batches, failed: stats.failedBatches, fallback: stats.fallbackBatches, dropped: stats.droppedSegments }, stored: stored.ok, summarised: summary.ok, posted: post && !postError, fileSentTo, lost, summaryIn, linkPosted };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

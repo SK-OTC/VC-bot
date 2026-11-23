@@ -4,7 +4,8 @@
 import { setTimeout as sleepFor } from 'node:timers/promises';
 
 /**
- * Returns { found: true, team } or { found: false, reason }. `reason` is a short fixed phrase, safe to log.
+ * Returns { found: true, team } or { found: false, reason, ended? }. `reason` is a short fixed phrase, safe to log. `ended` means the
+ * session is already over and the job must not record.
  * Without SESSION_ID, WORKER_URL and WORKER_SHARED_SECRET (a run started by hand) it simply finds nothing, and the
  * caller falls back to the TEAM_CONFIG secret.
  */
@@ -23,6 +24,9 @@ export async function fetchRemoteTeam(env, { fetchImpl = fetch, sleep = sleepFor
         signal: AbortSignal.timeout(8000),
       });
       if (res.status === 404) return { found: false, reason: 'the Worker has no setup for this voice channel' };
+      // The session already ended (this job was re-run, or is a second copy): the caller must stop, not fall back to TEAM_CONFIG,
+      // or the meeting would be recorded and posted twice.
+      if (res.status === 409) return { found: false, ended: true, reason: 'this recording session has already ended' };
       if (res.status === 401 || res.status === 403) return { found: false, reason: 'the Worker rejected WORKER_SHARED_SECRET' };
       if (res.ok) {
         const c = await res.json();
@@ -38,6 +42,11 @@ export async function fetchRemoteTeam(env, { fetchImpl = fetch, sleep = sleepFor
             backupChannelId: c.backup_channel_id ? String(c.backup_channel_id) : '',
             glossary: String(c.glossary ?? ''),
             language: String(c.language ?? ''),
+            // From the named recording setup (/recording setup); '' = not used.
+            summaryChannelId: c.summary_channel_id ? String(c.summary_channel_id) : '',
+            linkChannelId: c.link_channel_id ? String(c.link_channel_id) : '',
+            audioChannelId: c.audio_channel_id ? String(c.audio_channel_id) : '',
+            setupName: c.setup_name ? String(c.setup_name) : '',
           },
         };
       }

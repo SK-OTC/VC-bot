@@ -31,7 +31,7 @@ const SHORT = '**Summary**\n- We agreed the budget [00:00:01]\n\n**Decisions**\n
 const LONG = `**Summary**\n${Array.from({ length: 70 }, (_, i) => `- agreed point ${i} about the budget and the launch plan for the shoes [00:00:01]`).join('\n')}\n\n**Decisions**\n- None recorded\n\n**Action items**\n- Unassigned: send it [00:00:01]\n\n**Open questions**\n- None`;
 
 /** Runs finishSession with scripted fakes. Returns everything that was sent, in order. */
-async function run({ team = {}, summary = SHORT, upload = 'ok', dmFails = false, postFails = null, postTextFails = false, backupFails = false } = {}) {
+async function run({ team = {}, summary = SHORT, upload = 'ok', dmFails = false, postFails = null, postTextFails = false, backupFails = false, named = false, summaryFails = false, linkFails = false, audioFails = false } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'delivery-'));
   const events = [];
   const realFetch = globalThis.fetch;
@@ -51,6 +51,14 @@ async function run({ team = {}, summary = SHORT, upload = 'ok', dmFails = false,
     postText: async (text, o = {}) => { if (postTextFails) throw new Error('Missing Access'); events.push({ type: 'postText', text, replyTo: o.replyTo }); return { messageId: '555555555555555555' }; },
     dm: async (text, o = {}) => { if (dmFails) throw new Error('Cannot send messages to this user'); events.push({ type: 'dm', text, file: o.file?.name }); return { messageId: '666666666666666666' }; },
     postBackup: async (content, files) => { if (backupFails) throw new Error('Missing Access'); events.push({ type: 'backup', text: content, files: files.map((f) => f.name), inMemory: files.map((f) => Boolean(f.data)) }); },
+    // A named recording setup's channels (recorder/record.mjs adds these only when the setup names them).
+    ...(named
+      ? {
+          postSummary: async (text) => { if (summaryFails) throw new Error('Missing Access'); events.push({ type: 'postSummary', text }); return { messageId: '777777777777777777' }; },
+          postLink: async (text) => { if (linkFails) throw new Error('Missing Access'); events.push({ type: 'postLink', text }); },
+          postAudio: async (content, files) => { if (audioFails) throw new Error('Missing Access'); events.push({ type: 'audio', text: content, files: files.map((f) => f.name) }); },
+        }
+      : {}),
   };
   const cfg = {
     team: { name: 'Design', glossary: '', language: 'en', backupChannelId: '', transcriptChannelId: CHANNEL, save: true, post: true, dmUserId: '', ...team },
@@ -248,4 +256,76 @@ test('the rescue paths failing as well never throw', opt, async () => {
   const { result } = await run({ postFails: MISSING, upload: 'fail', dmFails: true, backupFails: true, team: { dmUserId: STARTER, backupChannelId: '888888888888888888' } });
   assert.equal(result.ok, true);
   assert.equal(result.lost, true);
+});
+
+// ---------- named recording setups: separate summary, recording-link and audio destinations ----------
+
+const SUMMARY_CH = '121212121212121212';
+const LINK_CH = '131313131313131313';
+const NAMED = { summaryChannelId: SUMMARY_CH, linkChannelId: LINK_CH, setupName: 'Sales' };
+const isPrivateFile = (e) => (e.file ?? '').startsWith('transcript-') || (e.files ?? []).some((f) => f.startsWith('transcript-') || f.endsWith('.wav') || f.endsWith('.ogg'));
+
+test('named setup: transcript in the private channel, then the recording link, then the summary and its link in the summary channel', opt, async () => {
+  const { result, events } = await run({ named: true, team: NAMED });
+  assert.deepEqual(types(events), ['postTranscript', 'postLink', 'upload', 'postSummary']);
+  const [link] = texts(events, 'postLink');
+  assert.ok(link.includes(`<https://discord.com/channels/${GUILD}/${CHANNEL}/444444444444444444>`), 'a Discord link to the transcript message');
+  assert.match(link, new RegExp(`Only people who can see <#${CHANNEL}> can open it`));
+  assert.ok(!link.includes('we agreed the budget'), 'no transcript text in the link channel');
+  assert.ok(!link.includes(URL_), 'the summary page link is not in the link channel');
+  const [summaryMsg] = texts(events, 'postSummary');
+  assert.ok(summaryMsg.includes(`<${URL_}>`));
+  assert.equal(texts(events, 'postText').length, 0, 'nothing else in the private channel');
+  assert.equal(result.summaryIn, 'summary');
+  assert.equal(result.linkPosted, true);
+});
+
+test('named setup: a summary channel that refuses the post: the private channel says so and gets the summary; private content never moves', opt, async () => {
+  const { result, events } = await run({ named: true, team: NAMED, summaryFails: true });
+  assert.deepEqual(types(events), ['postTranscript', 'postLink', 'upload', 'postText', 'postText']);
+  const [notice, summaryMsg] = texts(events, 'postText');
+  assert.match(notice, new RegExp(`could not post the summary in <#${SUMMARY_CH}>`));
+  assert.ok(summaryMsg.includes(`<${URL_}>`));
+  assert.equal(result.summaryIn, 'private');
+  assert.ok(result.notes.some((n) => /could not post the summary in the summary channel/.test(n)));
+  assert.ok(!events.some((e) => e.type === 'postSummary' || (e.type === 'postLink' && isPrivateFile(e))));
+});
+
+test('named setup: a link channel that refuses the post is only noted; everything else is delivered as usual', opt, async () => {
+  const { result, events } = await run({ named: true, team: NAMED, linkFails: true });
+  assert.deepEqual(types(events), ['postTranscript', 'upload', 'postSummary']);
+  assert.equal(result.linkPosted, false);
+  assert.ok(result.notes.some((n) => /could not post the recording link/.test(n)));
+});
+
+test('named setup: when the transcript file could not be posted there is no recording link, and the file goes nowhere public', opt, async () => {
+  const { result, events } = await run({ named: true, team: NAMED, postFails: MISSING });
+  assert.ok(!events.some((e) => e.type === 'postLink'), 'nothing to link to');
+  assert.ok(result.notes.some((n) => /no recording link was posted/.test(n)));
+  for (const e of events.filter((x) => x.type === 'postSummary' || x.type === 'postLink')) assert.ok(!isPrivateFile(e), 'no file in a public channel');
+  assert.ok(texts(events, 'postText').some((t) => /could not post the transcript file here/.test(t)), 'the private channel is told, as before');
+});
+
+test('named setup: a link channel that IS the private channel posts no link (the transcript is right there)', opt, async () => {
+  const { events } = await run({ named: true, team: { ...NAMED, linkChannelId: CHANNEL } });
+  assert.ok(!events.some((e) => e.type === 'postLink'));
+});
+
+test('named setup with audio: audio goes to the setup\'s private channel, never to the backup channel or the summary/link channels', opt, async () => {
+  const { events } = await run({ named: true, team: { ...NAMED, audioChannelId: CHANNEL, backupChannelId: '888888888888888888' } });
+  const audio = events.filter((e) => e.type === 'audio');
+  assert.equal(audio.length, 1);
+  assert.match(audio[0].text, /Audio backup for transcript/);
+  assert.ok(!events.some((e) => e.type === 'backup'), 'not the backup channel');
+});
+
+test('named setup with audio but a broken audio channel: the failure is noted and the audio is not sent anywhere else', opt, async () => {
+  const { result, events } = await run({ named: true, team: { ...NAMED, audioChannelId: CHANNEL, backupChannelId: '888888888888888888' }, audioFails: true });
+  assert.ok(!events.some((e) => e.type === 'backup' || e.type === 'audio'));
+  assert.ok(result.notes.some((n) => /audio backup failed/.test(n)));
+});
+
+test('named setup while posting is off: the summary and link channels are not used; the starter gets the summary privately as before', opt, async () => {
+  const { events } = await run({ named: true, team: { ...NAMED, post: false, transcriptChannelId: '', summaryChannelId: '', linkChannelId: '', dmUserId: STARTER } });
+  assert.deepEqual(types(events), ['upload', 'dm']);
 });

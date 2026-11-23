@@ -29,6 +29,7 @@ const MEETING_COLUMNS = new Set([
   'gcal_followup_expires',
   'gcal_meet',
   'gcal_provider',
+  'recording_setup',
 ]);
 
 // ---------- users ----------
@@ -91,8 +92,8 @@ export async function insertMeeting(db, m, nowSec) {
          (guild_id, name, name_key, channel_id, location, timezone, start_at, reminder_minutes,
           repeat, role_id, created_by, status, created_at, updated_at,
           duration_min, guest_team_key, gcal_owner_id, gcal_event_id, gcal_dirty, gcal_version,
-          gcal_followup_app_id, gcal_followup_token, gcal_followup_expires, gcal_meet, gcal_provider)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          gcal_followup_app_id, gcal_followup_token, gcal_followup_expires, gcal_meet, gcal_provider, recording_setup)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       m.guild_id,
@@ -119,6 +120,7 @@ export async function insertMeeting(db, m, nowSec) {
       m.gcal_followup_expires ?? null,
       m.gcal_meet === 0 || m.gcal_meet === false ? 0 : 1,
       m.gcal_provider ?? null,
+      m.recording_setup || null,
     )
     .run();
   return res.meta.last_row_id;
@@ -227,15 +229,15 @@ export async function savePreset(db, p, nowSec) {
     .prepare(
       `INSERT INTO presets
          (guild_id, name, name_key, channel_id, location, timezone, default_time, reminder_minutes,
-          repeat, role_id, created_by, created_at, updated_at, duration_min, guest_team_key, calendar, gcal_meet)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          repeat, role_id, created_by, created_at, updated_at, duration_min, guest_team_key, calendar, gcal_meet, recording_setup)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (guild_id, name_key) DO UPDATE SET
          name = excluded.name, channel_id = excluded.channel_id, location = excluded.location,
          timezone = excluded.timezone, default_time = excluded.default_time,
          reminder_minutes = excluded.reminder_minutes, repeat = excluded.repeat,
          role_id = excluded.role_id, updated_at = excluded.updated_at,
          duration_min = excluded.duration_min, guest_team_key = excluded.guest_team_key,
-         calendar = excluded.calendar, gcal_meet = excluded.gcal_meet`,
+         calendar = excluded.calendar, gcal_meet = excluded.gcal_meet, recording_setup = excluded.recording_setup`,
     )
     .bind(
       p.guild_id,
@@ -255,6 +257,7 @@ export async function savePreset(db, p, nowSec) {
       p.guest_team_key || null,
       p.calendar === 0 || p.calendar === false ? 0 : 1,
       p.gcal_meet === 0 || p.gcal_meet === false ? 0 : 1,
+      p.recording_setup || null,
     )
     .run();
 }

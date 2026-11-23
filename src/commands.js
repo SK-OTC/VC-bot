@@ -53,6 +53,10 @@ import { cmdStartRecording, cmdStopRecording } from './recording-commands.js';
 import { cmdTranscriptSettings } from './transcript-settings-commands.js';
 import { cmdRecordingSettings, cmdRemoveRecordingSetup, cmdSetupRecording } from './setup-commands.js';
 import { NOT_ENABLED, cmdCalendar, cmdGuests, followupFrom, newEventId, resolveCalendarAccount, resolveTeam, suggestTeams } from './calendar-commands.js';
+import { ONLY_DISCORD_LOCATION, cmdRecording, planRecordingSetup } from './named-setup-commands.js';
+import { getNamedSetup, isDefaultChoice, searchNamedSetupNames } from './named-setups.js';
+import { parseChannelLink } from './voice-link.js';
+import { plainName } from './messages.js';
 
 const MIN_LEAD_SEC = 60; // a meeting must start at least a minute from now
 const MAX_NAME = 80;
@@ -181,7 +185,7 @@ async function confirmAndAnnounce(ctx, meeting, { header, publicHeader, reminder
 // ---------- subcommands ----------
 
 /** Creates the meeting from fully resolved options (used by cmdCreate). */
-async function createMeeting(ctx, o, { notes = [] } = {}) {
+async function createMeeting(ctx, o, { notes = [], typedRecordingSetup = o.recording_setup !== undefined } = {}) {
   const { db, nowSec, userId, guildId, interaction } = ctx;
 
   const name = normalizeName(o.name ?? '');
@@ -213,12 +217,18 @@ async function createMeeting(ctx, o, { notes = [] } = {}) {
     return fail(`There's already a meeting called **${name}**. Use \`/update-meeting\` to change it, or pick another name.`);
   }
 
+  // Recording: only for a Discord voice channel location. The chosen setup (typed, or from the preset) is checked now; a missing one
+  // falls back to Default and the reply says so.
+  const channelId = o.channel ?? interaction.channel_id;
+  const rec = await planRecordingSetup(ctx, { location: loc.value ?? null, requested: o.recording_setup, typed: typedRecordingSetup, channelId });
+  if (!rec.ok) return fail(rec.message);
+
   const followup = account ? followupFrom(ctx) : null;
   const meeting = {
     guild_id: guildId,
     name,
     name_key: nameKey(name),
-    channel_id: o.channel ?? interaction.channel_id,
+    channel_id: channelId,
     location: loc.value ?? null,
     timezone: tzRes.tz,
     start_at: start.startAt,
@@ -236,6 +246,7 @@ async function createMeeting(ctx, o, { notes = [] } = {}) {
     gcal_followup_app_id: followup?.appId ?? null,
     gcal_followup_token: followup?.token ?? null,
     gcal_followup_expires: followup?.expires ?? null,
+    recording_setup: rec.store,
   };
   try {
     meeting.id = await insertMeeting(db, meeting, nowSec);
@@ -264,6 +275,7 @@ async function createMeeting(ctx, o, { notes = [] } = {}) {
   if (!account && team.key) {
     extraLines.push(`Guest team: ${team.name} (nobody is invited because this meeting is not on a Google Calendar)`);
   }
+  extraLines.push(...rec.lines);
   extraLines.push(...notes);
 
   return confirmAndAnnounce(ctx, meeting, {
@@ -327,6 +339,20 @@ async function cmdUpdate(ctx, o) {
   if (o.channel !== undefined) changes.channel_id = o.channel;
   const pings = pingsFrom(o);
   if (pings !== undefined) changes.role_id = pings;
+
+  // ---- recording setup (only for a Discord voice channel location) ----
+  let recordingLines = [];
+  if (o.recording_setup !== undefined || loc.set) {
+    const rec = await planRecordingSetup(ctx, {
+      location: loc.set ? loc.value : meeting.location,
+      requested: o.recording_setup !== undefined ? o.recording_setup : meeting.recording_setup,
+      typed: o.recording_setup !== undefined,
+      channelId: changes.channel_id ?? meeting.channel_id,
+    });
+    if (!rec.ok) return fail(rec.message);
+    if (!sameValue(rec.store, meeting.recording_setup)) changes.recording_setup = rec.store;
+    recordingLines = rec.lines;
+  }
 
   // ---- Google Calendar ----
   const synced = Boolean(meeting.gcal_owner_id && meeting.gcal_event_id);
@@ -409,7 +435,7 @@ async function cmdUpdate(ctx, o) {
   const syncNow = Boolean(attach) || (synced && (guestVisible || retrying));
   if (syncNow) await markMeetingDirty(db, meeting.id, followupFrom(ctx)); // the sync always goes through the OWNER's script
 
-  const extraLines = [];
+  const extraLines = [...recordingLines];
   if (attach) {
     extraLines.push(await teamLine(db, updated));
     extraLines.push(`Calendar: will be added to ${attach.email ?? 'your Google Calendar'} shortly.`);
@@ -490,6 +516,7 @@ async function findSavedSettings(ctx, name) {
       calendar: preset.calendar !== 0,
       meet: preset.gcal_meet !== 0,
       ping: preset.role_id ? preset.role_id.split(',') : [],
+      recording_setup: preset.recording_setup ?? undefined,
     };
   }
   const past = await findLatestMeetingByName(db, guildId, name);
@@ -509,6 +536,7 @@ async function findSavedSettings(ctx, name) {
     calendar: true,
     meet: past.gcal_meet !== 0,
     ping: past.role_id ? past.role_id.split(',') : [],
+    recording_setup: past.recording_setup ?? undefined,
   };
 }
 
@@ -532,7 +560,7 @@ async function cmdCreate(ctx, o) {
   }
 
   const merged = { ...base };
-  for (const key of ['time', 'channel', 'location', 'reminder', 'duration', 'timezone', 'repeat', 'team']) {
+  for (const key of ['time', 'channel', 'location', 'reminder', 'duration', 'timezone', 'repeat', 'team', 'recording_setup']) {
     if (o[key] !== undefined) merged[key] = o[key];
   }
   merged.calendar = o.calendar !== undefined ? o.calendar : base.calendar ? undefined : false;
@@ -567,7 +595,7 @@ async function cmdCreate(ctx, o) {
       merged.team = team.team_key;
     }
   }
-  return createMeeting(ctx, merged, { notes });
+  return createMeeting(ctx, merged, { notes, typedRecordingSetup: o.recording_setup !== undefined });
 }
 
 async function cmdPresetSave(ctx, o) {
@@ -606,6 +634,7 @@ async function cmdPresetSave(ctx, o) {
     guest_team_key: existing?.guest_team_key ?? null,
     calendar: existing?.calendar ?? 1,
     gcal_meet: existing?.gcal_meet ?? 1,
+    recording_setup: existing?.recording_setup ?? null,
   };
 
   if (o.time !== undefined) {
@@ -634,6 +663,20 @@ async function cmdPresetSave(ctx, o) {
   if (o.calendar !== undefined) next.calendar = o.calendar ? 1 : 0;
   if (o.meet !== undefined) next.gcal_meet = o.meet ? 1 : 0;
 
+  // Recording setup: only for a Discord voice channel location (typed now or already saved). "Default" (or blank) clears it. A name
+  // that does not exist yet is kept, with a warning: meetings from this preset use the Default setup until it is created.
+  const presetNotes = [];
+  if (o.recording_setup !== undefined) {
+    const wanted = normalizeName(o.recording_setup);
+    if (isDefaultChoice(wanted) || nameKey(wanted) === 'none') next.recording_setup = null;
+    else {
+      if (!parseChannelLink(next.location)) return fail(ONLY_DISCORD_LOCATION);
+      const found = await getNamedSetup(db, guildId, wanted);
+      next.recording_setup = found?.name ?? wanted;
+      if (!found) presetNotes.push(`Warning: there is no recording setup called **${plainName(wanted)}** yet, so meetings from this preset use the **Default** setup until an admin creates it with \`/recording setup\`.`);
+    }
+  }
+
   // Team: a team you own, or "none". A new preset defaults to your only team (if you have exactly one).
   if (o.team !== undefined) {
     const team = await resolveTeam(ctx, o.team);
@@ -648,6 +691,7 @@ async function cmdPresetSave(ctx, o) {
   const team = next.guest_team_key ? await getTeam(db, guildId, next.guest_team_key) : null;
   const text =
     presetText(next, { header: existing ? 'Preset updated' : 'Preset saved', teamName: team?.name ?? null }) +
+    presetNotes.map((n) => `\n${n}`).join('') +
     `\nSchedule it any time with \`/new-meeting name:${next.name} date:...\` (change anything by adding options).`;
   return reply(text, { ephemeral: true, allowedMentions: { parse: [] } });
 }
@@ -668,6 +712,7 @@ async function cmdPresets(ctx) {
     if (p.role_id) bits.push(`pings ${formatRoles(p)}`);
     if (p.guest_team_key) bits.push(`team ${teams.get(p.guest_team_key) ?? `${p.guest_team_key} (deleted)`}`);
     bits.push(p.calendar === 0 ? 'calendar off' : 'calendar on');
+    if (p.recording_setup) bits.push(`recording setup ${plainName(p.recording_setup)}`);
     return `- ${bits.join(' / ')}`;
   });
   return reply(`**Saved presets**\n${lines.join('\n')}`, { ephemeral: true, allowedMentions: { parse: [] } });
@@ -720,14 +765,38 @@ function suggestZones(query) {
   return [...places, ...zones].slice(0, 25);
 }
 
+/** The location a `recording_setup` choice would apply to, while the command is still being typed. */
+async function autocompleteLocation(ctx, command, inner) {
+  const value = (n) => inner.find((o) => o.name === n)?.value;
+  const typed = value('location');
+  if (typed !== undefined && String(typed).trim() !== '') return typed;
+  const name = value('name');
+  if (!name) return null;
+  if (command === 'new-meeting') {
+    if (value('reuse') === false) return null;
+    return (await getPreset(ctx.db, ctx.guildId, name))?.location ?? (await findLatestMeetingByName(ctx.db, ctx.guildId, name))?.location ?? null;
+  }
+  if (command === 'update-meeting') return (await findActiveMeetingByName(ctx.db, ctx.guildId, name))?.location ?? null;
+  if (command === 'add-update-preset') return (await getPreset(ctx.db, ctx.guildId, name))?.location ?? null;
+  return null;
+}
+
 async function handleAutocomplete(interaction, ctx) {
   const root = interaction.data.options ?? [];
   const command = interaction.data.name;
-  // Only /calendar has subcommands; every other command has its options at the top level.
-  const inner = command === 'calendar' ? root[0]?.options ?? [] : root;
+  // Only /calendar and /recording have subcommands; every other command has its options at the top level.
+  const inner = command === 'calendar' || command === 'recording' ? root[0]?.options ?? [] : root;
   const focused = inner.find((o) => o.focused);
   let choices = [];
-  if (focused?.name === 'timezone') {
+  if (command === 'recording' && focused?.name === 'name' && ctx.guildId) {
+    choices = (await searchNamedSetupNames(ctx.db, ctx.guildId, focused.value)).map((n) => ({ name: n.slice(0, 100), value: n }));
+  } else if (focused?.name === 'recording_setup' && ctx.guildId) {
+    // Offered only when the meeting's location is a Discord voice channel link: typed in this command, or else the one saved on
+    // the meeting / preset being used. For any other location there is nothing to pick.
+    if (parseChannelLink(await autocompleteLocation(ctx, command, inner))) {
+      choices = (await searchNamedSetupNames(ctx.db, ctx.guildId, focused.value)).map((n) => ({ name: n.slice(0, 100), value: n }));
+    }
+  } else if (focused?.name === 'timezone') {
     choices = suggestZones(focused.value);
   } else if (focused?.name === 'team' && ctx.guildId && ctx.userId) {
     // "(no guests)" is only a sensible answer where a team is optional.
@@ -809,6 +878,8 @@ export async function handleInteraction(interaction, { db, discord, bridge = nul
       return cmdRemoveRecordingSetup(ctx, o);
     case 'transcript-settings':
       return cmdTranscriptSettings(ctx, o);
+    case 'recording':
+      return cmdRecording(ctx, options?.[0]?.name, optionMap(options?.[0]?.options));
   }
   return fail("I don't know that command.");
 }

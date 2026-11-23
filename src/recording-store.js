@@ -53,20 +53,32 @@ export async function findLiveSessions(db, guildId, channelId = null) {
   return (await stmt.all()).results;
 }
 
-/** Creates a session. { ok: false, conflict: true } when that voice channel already has a live one. */
-export async function createSession(db, { id, channelId, guildId, startedBy, meetingId = null, startChannelId = null }, nowSec) {
+/**
+ * Creates a session. { ok: false, conflict: true } when that voice channel already has a live one, or (for a scheduled meeting) when
+ * this occurrence of the meeting already has a session (`meetingFireAt`: the database allows one per occurrence).
+ * `routing` is the named setup's channels, fixed for the life of the session (see sessionRouting in src/named-setups.js).
+ */
+export async function createSession(db, { id, channelId, guildId, startedBy, meetingId = null, startChannelId = null, meetingFireAt = null, routing = null }, nowSec) {
+  const r = routing ?? {};
   try {
     await db
       .prepare(
-        'INSERT INTO recording_sessions (id, voice_channel_id, guild_id, started_by, meeting_id, start_channel_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        `INSERT INTO recording_sessions (id, voice_channel_id, guild_id, started_by, meeting_id, start_channel_id, status, created_at, updated_at,
+           meeting_fire_at, setup_name, private_channel_id, summary_channel_id, link_channel_id, audio_channel_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(id, channelId, guildId, startedBy, meetingId, startChannelId, 'starting', nowSec, nowSec)
+      .bind(id, channelId, guildId, startedBy, meetingId, startChannelId, 'starting', nowSec, nowSec, meetingFireAt, r.setupName ?? null, r.privateChannelId ?? null, r.summaryChannelId ?? null, r.linkChannelId ?? null, r.audioChannelId ?? null)
       .run();
     return { ok: true };
   } catch (e) {
     if (/UNIQUE constraint failed/i.test(String(e?.message ?? ''))) return { ok: false, conflict: true };
     throw e;
   }
+}
+
+/** The session already made for one occurrence of a scheduled meeting (by its start time), or null. */
+export async function findSessionForOccurrence(db, meetingId, fireAt) {
+  return (await db.prepare('SELECT * FROM recording_sessions WHERE meeting_id = ? AND meeting_fire_at = ?').bind(meetingId, fireAt).first()) ?? null;
 }
 
 /** The session already made for one occurrence of a scheduled meeting (created at or after `sinceSec`), or null. */
@@ -161,6 +173,35 @@ export function resolveTranscriptTarget({ settings, setup, session }) {
     save: settings.save,
     post,
     channelId: post ? settings.destination || setup?.transcript_channel_id || session?.start_channel_id || null : null,
+  };
+}
+
+/**
+ * Every destination of one recording. Pure: the server's /transcript-settings, the voice channel's /setup-recording and the session
+ * (which carries the named setup's channels, fixed when it started) decide.
+ *   private  the transcript file: the named setup's private channel, else where it went before (resolveTranscriptTarget)
+ *   summary  the summary message and its link: the named setup's summary channel, else the private channel (as before: one channel)
+ *   link     the "recording is ready" message: only when the named setup names a link channel that is not the private channel itself
+ *   audio    the audio files: the named setup's private channel when its audio is on, else the voice channel's backup channel
+ *   backup   the voice channel's backup channel (where a transcript file that could not be posted is rescued to)
+ * With posting off (/transcript-settings post:false) no channel gets the transcript, summary or link: that server-wide choice wins
+ * over every named setup. Nothing here ever moves private content to a channel that was not named for it.
+ */
+export function resolveRouting({ settings, setup, session }) {
+  const base = resolveTranscriptTarget({ settings, setup, session });
+  const s = session ?? {};
+  const privateId = base.post ? s.private_channel_id || base.channelId : null;
+  const summaryId = base.post ? s.summary_channel_id || privateId : null;
+  const linkId = base.post && s.link_channel_id && s.link_channel_id !== privateId ? s.link_channel_id : null;
+  return {
+    save: base.save,
+    post: base.post,
+    privateChannelId: privateId,
+    summaryChannelId: summaryId,
+    linkChannelId: linkId,
+    audioChannelId: s.audio_channel_id || setup?.backup_channel_id || null,
+    backupChannelId: setup?.backup_channel_id ?? null,
+    setupName: s.setup_name || null,
   };
 }
 

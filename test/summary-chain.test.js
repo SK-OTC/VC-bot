@@ -5,7 +5,7 @@ import { EngineError } from '../pipeline/groq.mjs';
 import { RateLimiter, cfLimiter } from '../pipeline/limiter.mjs';
 import { FALLBACK_SUFFIX, glossaryLine, mapSystem, mergeNotesSystem, reduceSystem, singleSystem } from '../pipeline/prompts.mjs';
 import { verifySummary, itemWords, parseTranscriptLines, UNVERIFIED } from '../pipeline/verify.mjs';
-import { CHUNK_OUTPUT_TOKENS, FINAL_OUTPUT_TOKENS, chunkText, runSummaryChain, summarize } from '../pipeline/summary.mjs';
+import { CHUNK_OUTPUT_TOKENS, FINAL_OUTPUT_TOKENS, chunkText, estimateTokens, runSummaryChain, summarize } from '../pipeline/summary.mjs';
 import { buildSummaryProviders, parseOrder } from '../pipeline/providers.mjs';
 import { fetchSummaryBudget } from '../pipeline/budget.mjs';
 import { LLAMA_LABEL, LLAMA_MODEL, chatNeurons, embeddingNeurons, secondsUntilMidnightUtc, utcDay } from '../src/neurons.js';
@@ -165,10 +165,26 @@ test('prompts: every prompt lists the glossary spellings; the rules for cautious
   assert.match(mapSystem(), /TOPICS, DECISIONS, ACTION ITEMS, OPEN QUESTIONS/);
   assert.match(singleSystem(), /Owner: task \[hh:mm:ss\]/);
   assert.match(singleSystem(), /speaker's name exactly as it appears in the transcript/);
-  assert.match(singleSystem(), /\*\*Summary\*\*[\s\S]*\*\*Decisions\*\*[\s\S]*\*\*Action items\*\*[\s\S]*\*\*Open questions\*\*/);
+  assert.match(singleSystem(), /topic sections[\s\S]*\*\*Decisions\*\*[\s\S]*\*\*Action items\*\*[\s\S]*\*\*Open questions\*\*/);
   assert.equal(glossaryLine(''), '');
   assert.equal(glossaryLine(undefined), '');
   assert.match(FALLBACK_SUFFIX, /Do not add information that is not in the transcript\./);
+});
+
+test('one request only when the whole request fits: the larger prompt does not make a single request bigger than before', async () => {
+  const { SINGLE_PROMPT_ALLOWANCE } = await import('../pipeline/summary.mjs');
+  const calls = [];
+  const chat = { requests: 0, async complete(system) { calls.push(system); this.requests++; return '**Decisions**\n- None recorded'; } };
+  const lineOf = (i) => `[00:${String(Math.floor(i / 60) % 60).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}] Sam: we talked about the shoe launch plan and the budget for it`;
+  const body = (tokens) => { const out = []; for (let i = 0; estimateTokens(out.join('\n')) < tokens; i++) out.push(lineOf(i)); return out.join('\n'); };
+  const promptTokens = estimateTokens(singleSystem());
+  assert.ok(promptTokens > SINGLE_PROMPT_ALLOWANCE, 'the prompt is bigger than it used to be');
+  await summarize({ transcriptBody: body(3000), chat });
+  assert.equal(calls.length, 1, 'a short meeting is still one request');
+  calls.length = 0;
+  await summarize({ transcriptBody: body(4800), chat });
+  assert.ok(calls.length >= 2, 'near the old limit it is split, because prompt + transcript would be larger than before');
+  assert.ok(estimateTokens(body(3000)) + promptTokens <= 5000 + SINGLE_PROMPT_ALLOWANCE);
 });
 
 // ---------- the timestamp check (B5) ----------

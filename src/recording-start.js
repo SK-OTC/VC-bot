@@ -10,11 +10,14 @@ export function newSessionId() {
   return Array.from(bytes, (b) => ID_CHARS[b % ID_CHARS.length]).join('');
 }
 
-/** Makes the session row. { ok: true, id } or { ok: false, conflict: true } when that voice channel is already being recorded. */
-export async function openSession(db, { channelId, guildId, startedBy, startChannelId = null, meetingId = null }, nowSec) {
+/**
+ * Makes the session row. { ok: true, id } or { ok: false, conflict: true } when that voice channel is already being recorded (or this
+ * occurrence of a scheduled meeting already has a session). `routing` is the named setup's channels (sessionRouting).
+ */
+export async function openSession(db, { channelId, guildId, startedBy, startChannelId = null, meetingId = null, meetingFireAt = null, routing = null }, nowSec) {
   await failStaleSessions(db, guildId, nowSec);
   const id = newSessionId();
-  const made = await createSession(db, { id, channelId, guildId, startedBy, startChannelId, meetingId }, nowSec);
+  const made = await createSession(db, { id, channelId, guildId, startedBy, startChannelId, meetingId, meetingFireAt, routing }, nowSec);
   return made.ok ? { ok: true, id } : { ok: false, conflict: true };
 }
 

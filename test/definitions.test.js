@@ -32,7 +32,7 @@ test('command definitions satisfy Discord registration rules', () => {
     'new-meeting', 'update-meeting', 'cancel-meeting', 'upcoming-meetings',
     'add-update-preset', 'meeting-presets', 'delete-preset',
     'add-team', 'remove-team-member', 'show-teams', 'delete-team',
-    'calendar', 'setup-recording', 'recording-settings', 'remove-recording-setup', 'start-recording', 'stop-recording', 'transcript-settings', 'set-timezone',
+    'calendar', 'setup-recording', 'recording-settings', 'remove-recording-setup', 'recording', 'start-recording', 'stop-recording', 'transcript-settings', 'set-timezone',
   ]);
   const seen = new Set();
   for (const c of COMMANDS) {
@@ -49,12 +49,26 @@ test('command definitions satisfy Discord registration rules', () => {
   assert.equal(byName('guests'), undefined);
 });
 
-test('only /calendar still has subcommands', () => {
+test('only /calendar and /recording have subcommands', () => {
   for (const c of COMMANDS) {
     const hasSubs = (c.options ?? []).some((o) => o.type === 1);
-    assert.equal(hasSubs, c.name === 'calendar', c.name);
+    assert.equal(hasSubs, c.name === 'calendar' || c.name === 'recording', c.name);
   }
   assert.deepEqual(optionNames('calendar'), ['connect', 'disconnect', 'status']);
+  assert.deepEqual(optionNames('recording'), ['setup', 'list', 'delete']);
+  const setup = byName('recording').options.find((o) => o.name === 'setup');
+  assert.deepEqual(setup.options.map((o) => o.name), ['name', 'private_channel', 'summary_channel', 'link_channel', 'audio', 'clear']);
+  for (const n of ['private_channel', 'summary_channel', 'link_channel']) assert.deepEqual(setup.options.find((o) => o.name === n).channel_types, [0, 5], n);
+});
+
+test('recording_setup is on /new-meeting, /update-meeting and /add-update-preset, as an autocompleted name', () => {
+  for (const c of ['new-meeting', 'update-meeting', 'add-update-preset']) {
+    const o = byName(c).options.find((x) => x.name === 'recording_setup');
+    assert.ok(o, c);
+    assert.equal(o.type, 3);
+    assert.equal(o.autocomplete, true);
+    assert.ok(!o.required);
+  }
 });
 
 test('every option the handlers read exists in the definitions', () => {

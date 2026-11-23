@@ -13,6 +13,8 @@ export const estimateTokens = estimate;
 // Explicit output limits (B3): a chunk's notes, and the final summary.
 export const CHUNK_OUTPUT_TOKENS = 700;
 export const FINAL_OUTPUT_TOKENS = 1200;
+// The prompt size a single request was budgeted with before the examples were added (see summarize).
+export const SINGLE_PROMPT_ALLOWANCE = 450;
 
 /** Splits transcript text into pieces of at most maxTokens, always on line boundaries. */
 export function chunkText(text, maxTokens = 4500) {
@@ -100,7 +102,10 @@ export async function summarize({ transcriptBody, chat, glossary = '', systemSuf
   try {
     if (!String(transcriptBody).trim()) return { ok: false, reason: 'the transcript is empty' };
     let text;
-    if (estimateTokens(transcriptBody) <= singleMaxTokens) {
+    // One request when the WHOLE request (prompt + transcript) fits. The prompt grew with its few-shot examples (about 1,000
+    // tokens); counting it keeps a single request no larger than before (singleMaxTokens of transcript + a ~450-token prompt),
+    // which matters for Groq, whose per-minute token limit also caps a single request.
+    if (estimateTokens(transcriptBody) + estimateTokens(sys(singleSystem)) <= singleMaxTokens + SINGLE_PROMPT_ALLOWANCE) {
       text = await ask(sys(singleSystem), transcriptBody, FINAL_OUTPUT_TOKENS);
     } else {
       const parts = chunkText(transcriptBody, chunkTokens);
@@ -124,6 +129,16 @@ export async function summarize({ transcriptBody, chat, glossary = '', systemSuf
   } catch (e) {
     return { ok: false, reason: `${e.kind || 'error'}: ${e.message}`.slice(0, 200) };
   }
+}
+
+/** Removes "(Left out: ...)" lines, which belong to the prompt's examples; a model that copies one must not show it to the team. */
+export function stripExampleNotes(text) {
+  return String(text)
+    .split('\n')
+    .filter((line) => !/^\s*\(Left out:.*\)\s*$/i.test(line))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 const sumUsage = (providers) =>
@@ -154,7 +169,7 @@ export async function runSummaryChain({ transcriptBody, glossary = '', providers
       log(`summary: ${p.name} failed (${r.reason})`);
       continue;
     }
-    const checked = verifySummary({ summaryText: r.text, transcriptBody });
+    const checked = verifySummary({ summaryText: stripExampleNotes(r.text), transcriptBody });
     if (checked.flagged) log(`summary: ${checked.flagged} of ${checked.checked} decisions and action items could not be matched to the transcript (marked unverified)`);
     const text = `${checked.text.trimEnd()}\n\nSummary written by ${p.label}.`;
     return {

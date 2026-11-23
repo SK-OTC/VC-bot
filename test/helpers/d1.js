@@ -78,11 +78,11 @@ export function createFakeDiscord(script = [], { voice = {}, channels = {} } = {
       this.dms.push({ userId, ...payload });
       return { ok: true };
     },
-    /** channels: { <channelId>: { type, guildId, name } }; a channel not listed is one the bot cannot see (HTTP 404). */
+    /** channels: { <channelId>: { type, guildId, name, private? } }; a channel not listed is one the bot cannot see (HTTP 404). */
     async getChannel(channelId) {
       const c = channels[channelId];
       if (!c) return { ok: false, status: 404, error: 'HTTP 404' };
-      return { ok: true, channel: { id: channelId, type: c.type, guildId: c.guildId ?? null, name: c.name ?? 'chan' } };
+      return { ok: true, channel: { id: channelId, type: c.type, guildId: c.guildId ?? null, name: c.name ?? 'chan', hiddenFromEveryone: Boolean(c.private) } };
     },
     /** voice: { <userId>: <channelId> }; a user not listed is "in no voice channel"; a value of 'error' simulates a failed lookup. */
     async getVoiceChannelOf(guildId, userId) {

@@ -51,6 +51,11 @@ async function pollStopFlag(cfg) {
 
 async function main() {
   const remote = await fetchRemoteTeam(process.env);
+  if (remote.ended) {
+    // A re-run (or second copy) of a job whose session is over: recording again would post the meeting a second time.
+    log(`nothing to do: ${remote.reason}`);
+    process.exit(0);
+  }
   const cfg = parseSessionConfig(process.env, remote.found ? remote.team : null);
   log(remote.found ? 'recording settings: from /setup-recording' : `recording settings: from TEAM_CONFIG (${remote.reason})`);
   mkdirSync(OUT_DIR, { recursive: true });
@@ -76,6 +81,27 @@ async function main() {
   if (cfg.team.post && (!target?.isTextBased() || target.guildId !== guild.id)) throw new Error('the transcript channel must be a text channel in the same server as the voice channel');
   const backup = cfg.team.backupChannelId ? await client.channels.fetch(cfg.team.backupChannelId) : null;
   if (backup && (!backup.isTextBased() || backup.guildId !== guild.id)) throw new Error('backupChannelId must be a text channel in the same server');
+  // The named recording setup's other channels (/recording setup). A problem with one of them never stops a recording: an unusable
+  // summary channel means the summary goes with the transcript (finishSession says so there), an unusable link or audio channel
+  // means nothing is posted there. Nothing private is ever redirected to some other channel.
+  const optionalChannel = async (id, what) => {
+    if (!id) return null;
+    try {
+      const c = await client.channels.fetch(id);
+      if (c?.isTextBased() && c.guildId === guild.id) return c;
+    } catch {
+      // fall through
+    }
+    log(`warning: the ${what} channel of the recording setup is not a text channel the bot can use in this server; nothing is posted there`);
+    return null;
+  };
+  const summaryTarget = await optionalChannel(cfg.team.summaryChannelId, 'summary');
+  const linkTarget = await optionalChannel(cfg.team.linkChannelId, 'recording-link');
+  const audioTarget = await optionalChannel(cfg.team.audioChannelId, 'audio');
+  const unusable = (what) => async () => {
+    throw new Error(`the ${what} channel is not a text channel I can use in this server`);
+  };
+  if (cfg.team.setupName) log(`recording setup: ${cfg.team.summaryChannelId ? 'separate summary channel' : 'summary with the transcript'}, ${cfg.team.linkChannelId ? 'recording link on' : 'no recording link'}, audio ${cfg.team.audioChannelId ? 'in the private channel' : cfg.team.backupChannelId ? 'in the backup channel' : 'not kept'}`);
   // /setup-recording only proves the bot can SEND in the transcript channel. Without Attach Files the transcript file cannot be
   // posted there; finishSession then saves it and sends it another way, but warn now so the log shows why. Never blocks recording.
   try {
@@ -113,7 +139,11 @@ async function main() {
     log(`could not change the bot's nickname (${e.code || e.message})`);
   }
   try {
-    const where = cfg.team.post ? `The transcript and a summary will be posted in <#${target.id}>.` : 'A summary link will be sent privately to the person who started the recording.';
+    const where = !cfg.team.post
+      ? 'A summary link will be sent privately to the person who started the recording.'
+      : summaryTarget && summaryTarget.id !== target.id
+        ? `The transcript will be posted in <#${target.id}> and a summary in <#${summaryTarget.id}>.`
+        : `The transcript and a summary will be posted in <#${target.id}>.`;
     await channel.send({ content: `🔴 **This voice channel is being recorded and transcribed.** ${where} Leave the channel if you do not agree.`, allowedMentions: NOMENTIONS });
     noticeSent = true;
   } catch (e) {
@@ -271,6 +301,19 @@ async function main() {
       // Audio files come from disk ({ path }); a rescued transcript file comes from memory ({ data }).
       await retry(() => backup.send({ content, files: files.map((f) => ({ attachment: f.data ?? f.path, name: f.name })), allowedMentions: NOMENTIONS }));
     },
+    // Named recording setup channels. One that could not be opened above fails every post (finishSession then reports it, and the
+    // summary goes with the transcript instead); a setup without the channel leaves the function out.
+    ...(cfg.team.summaryChannelId
+      ? { postSummary: summaryTarget ? async (text) => ({ messageId: (await retry(() => summaryTarget.send({ content: text, allowedMentions: NOMENTIONS }))).id }) : unusable('summary') }
+      : {}),
+    ...(cfg.team.linkChannelId ? { postLink: linkTarget ? async (text) => { await retry(() => linkTarget.send({ content: text, allowedMentions: NOMENTIONS })); } : unusable('recording-link') } : {}),
+    ...(cfg.team.audioChannelId
+      ? {
+          postAudio: audioTarget
+            ? async (content, files) => { await retry(() => audioTarget.send({ content, files: files.map((f) => ({ attachment: f.data ?? f.path, name: f.name })), allowedMentions: NOMENTIONS })); }
+            : unusable('audio'),
+        }
+      : {}),
   };
 
   const offsetSec = Math.max(0, ((state.firstHumanAt ?? recStartMs) - recStartMs) / 1000);
@@ -292,20 +335,22 @@ async function main() {
       guildId: guild.id,
     });
   } catch (e) {
-    // Never lose a meeting's audio because the transcription step broke: put the audio in the backup channel if there is one.
+    // Never lose a meeting's audio because the transcription step broke: put the audio in the setup's private audio channel or the
+    // backup channel, if there is one (only ever a channel named for audio).
     log(`transcription step failed: ${e.message}`);
     let rescued = false;
-    if (backup) {
+    const rescueTo = audioTarget ? io.postAudio : backup ? io.postBackup : null;
+    if (rescueTo) {
       const files = speakerList.flatMap((sp) => sp.files).map((f) => ({ path: f, name: path.basename(f), size: statSync(f).size }));
       const { batches } = batchAttachments(files);
       try {
-        for (let i = 0; i < batches.length; i++) await io.postBackup(`Rescued audio (part ${i + 1} of ${batches.length}). Speaker numbers: ${speakerList.map((sp) => sp.label).join(', ')}.`, batches[i]);
+        for (let i = 0; i < batches.length; i++) await rescueTo(`Rescued audio (part ${i + 1} of ${batches.length}). Speaker numbers: ${speakerList.map((sp) => sp.label).join(', ')}.`, batches[i]);
         rescued = batches.length > 0;
       } catch (err) {
         log(`rescue upload failed: ${err.message}`);
       }
     }
-    await notify(`Transcription failed (${String(e.message).slice(0, 150)}). ${rescued ? 'The audio was saved to the backup channel so it can be transcribed later.' : 'The audio could not be saved and is gone.'}`);
+    await notify(`Transcription failed (${String(e.message).slice(0, 150)}). ${rescued ? (audioTarget ? 'The audio was saved to this channel so it can be transcribed later.' : 'The audio was saved to the backup channel so it can be transcribed later.') : 'The audio could not be saved and is gone.'}`);
     rmSync(OUT_DIR, { recursive: true, force: true });
     await client.destroy();
     await enginePlan.close();

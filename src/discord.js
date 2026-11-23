@@ -3,6 +3,7 @@
 export const InteractionType = { PING: 1, APPLICATION_COMMAND: 2, AUTOCOMPLETE: 4 };
 export const ResponseType = { PONG: 1, MESSAGE: 4, DEFERRED: 5, AUTOCOMPLETE: 8 };
 export const MessageFlags = { EPHEMERAL: 64 };
+const VIEW_CHANNEL = 1n << 10n; // Discord permission bit
 
 function hexToBytes(hex) {
   if (typeof hex !== 'string' || hex.length % 2 !== 0 || !/^[0-9a-f]*$/i.test(hex)) {
@@ -131,7 +132,11 @@ export function createDiscordClient({ token, apiBase = 'https://discord.com/api/
     }
   }
 
-  /** Basic facts about a channel the bot can see: { ok: true, channel: { id, type, guildId, name } } or { ok: false, status?, error }. */
+  /**
+   * Basic facts about a channel the bot can see: { ok: true, channel: { id, type, guildId, name, hiddenFromEveryone } } or
+   * { ok: false, status?, error }. `hiddenFromEveryone` is true when the channel's own permissions deny View Channel to @everyone
+   * (the usual way a channel is made private). It is a hint for a warning, not proof: roles can still open it to many people.
+   */
   async function getChannel(channelId) {
     let res;
     try {
@@ -144,7 +149,14 @@ export function createDiscordClient({ token, apiBase = 'https://discord.com/api/
     if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}` };
     try {
       const c = await res.json();
-      return { ok: true, channel: { id: String(c.id), type: c.type, guildId: c.guild_id ? String(c.guild_id) : null, name: String(c.name ?? '') } };
+      const everyone = (Array.isArray(c.permission_overwrites) ? c.permission_overwrites : []).find((o) => String(o?.id) === String(c.guild_id) && Number(o?.type) === 0);
+      let hiddenFromEveryone = false;
+      try {
+        hiddenFromEveryone = Boolean(everyone) && (BigInt(everyone.deny ?? '0') & VIEW_CHANNEL) !== 0n;
+      } catch {
+        hiddenFromEveryone = false;
+      }
+      return { ok: true, channel: { id: String(c.id), type: c.type, guildId: c.guild_id ? String(c.guild_id) : null, name: String(c.name ?? ''), hiddenFromEveryone } };
     } catch {
       return { ok: false, error: 'unreadable answer' };
     }

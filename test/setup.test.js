@@ -278,9 +278,9 @@ test('start-recording: only works for a channel that has been set up in THIS ser
   assert.match((await t.run(slash('start-recording', {}))).data.content, /not set up for recording yet/);
 });
 
-test('definitions: the four admin commands are limited to Manage Server by default, with the right channel kinds', () => {
+test('definitions: the five admin commands are limited to Manage Server by default, with the right channel kinds', () => {
   const by = (n) => COMMANDS.find((c) => c.name === n);
-  for (const n of ['setup-recording', 'recording-settings', 'remove-recording-setup', 'transcript-settings']) {
+  for (const n of ['setup-recording', 'recording-settings', 'remove-recording-setup', 'transcript-settings', 'recording']) {
     assert.equal(by(n).default_member_permissions, '32', n);
     assert.deepEqual(by(n).contexts, [0], n);
   }
@@ -291,7 +291,7 @@ test('definitions: the four admin commands are limited to Manage Server by defau
   assert.deepEqual(opts.transcript_channel.channel_types, [0, 5]);
   assert.deepEqual(opts.backup_channel.channel_types, [0, 5]);
   assert.equal(opts.glossary.max_length, 500);
-  assert.ok(!COMMANDS.some((c) => !['setup-recording', 'recording-settings', 'remove-recording-setup', 'transcript-settings'].includes(c.name) && c.default_member_permissions), 'other commands stay open to everyone');
+  assert.ok(!COMMANDS.some((c) => !['setup-recording', 'recording-settings', 'remove-recording-setup', 'transcript-settings', 'recording'].includes(c.name) && c.default_member_permissions), 'other commands stay open to everyone');
 });
 
 // ---------- the Worker endpoint the recorder calls ----------
@@ -318,12 +318,16 @@ test('config endpoint: needs the secret, returns only the session\'s own channel
   assert.equal(ok.headers.get('Cache-Control'), 'no-store');
   assert.deepEqual(await ok.json(), {
     voice_channel_id: VC, guild_id: GUILD, name: 'Design', transcript_channel_id: TXT, save: true, post: true, dm_user_id: null, backup_channel_id: BAK, glossary: 'Foo', language: 'fr',
+    summary_channel_id: null, link_channel_id: null, audio_channel_id: null, setup_name: null,
   });
   for (const secret of [null, 'wrong', '']) assert.equal((await call('GET', '/api/sessions/sess1234/config', secret)).status, 401);
   assert.equal((await call('POST', '/api/sessions/sess1234/config')).status, 405);
   assert.equal((await call('GET', '/api/sessions/unknownid/config')).status, 404);
   assert.equal((await call('GET', '/api/sessions/bad%20id/config')).status, 404);
   assert.equal((await call('GET', '/api/sessions/nosetup1/config')).status, 404); // session for a channel with no setup
+  assert.equal((await call('GET', '/api/sessions/wrongguild/config')).status, 409); // an ended session is refused before anything else
+  t.db.sql("UPDATE recording_sessions SET status = 'running', voice_channel_id = '121212121212121212' WHERE id = 'wrongguild'");
+  t.db.sql("INSERT INTO recording_setups (voice_channel_id, guild_id, name, created_by, created_at, updated_at) VALUES ('121212121212121212', '" + GUILD + "', 'X', 'a', 1, 1)");
   assert.equal((await call('GET', '/api/sessions/wrongguild/config')).status, 404); // setup belongs to a different server than the session
   const text = await (await call('GET', '/api/sessions/sess1234/config')).text();
   assert.ok(!text.includes(VC2) && !text.includes('Eng'), 'never another channel\'s settings');
@@ -331,12 +335,12 @@ test('config endpoint: needs the secret, returns only the session\'s own channel
 
 // ---------- the recorder side ----------
 
-const goodTeam = { voiceChannelId: VC, name: 'Design', transcriptChannelId: TXT, save: true, post: true, dmUserId: '', backupChannelId: '', glossary: 'Foo', language: 'en' };
+const goodTeam = { voiceChannelId: VC, name: 'Design', transcriptChannelId: TXT, save: true, post: true, dmUserId: '', backupChannelId: '', glossary: 'Foo', language: 'en', summaryChannelId: '', linkChannelId: '', audioChannelId: '', setupName: '' };
 const ENV = { DISCORD_TOKEN: 't', CHANNEL_ID: VC };
 
 test('parseSessionConfig: settings from the Worker win; TEAM_CONFIG is only the fallback', () => {
   const fromWorker = parseSessionConfig({ ...ENV, TEAM_CONFIG: 'not even json' }, goodTeam);
-  assert.deepEqual(fromWorker.team, { name: 'Design', transcriptChannelId: TXT, save: true, post: true, dmUserId: '', backupChannelId: '', glossary: 'Foo', language: 'en' });
+  assert.deepEqual(fromWorker.team, { name: 'Design', transcriptChannelId: TXT, save: true, post: true, dmUserId: '', backupChannelId: '', glossary: 'Foo', language: 'en', summaryChannelId: '', linkChannelId: '', audioChannelId: '', setupName: '' });
   const teamConfig = JSON.stringify({ [VC]: { name: 'FromSecret', transcriptChannelId: BAK } });
   assert.equal(parseSessionConfig({ ...ENV, TEAM_CONFIG: teamConfig }, goodTeam).team.name, 'Design');
   assert.equal(parseSessionConfig({ ...ENV, TEAM_CONFIG: teamConfig }, null).team.name, 'FromSecret');
@@ -405,7 +409,7 @@ test('contract: the recorder\'s fetchRemoteTeam and the Worker agree, end to end
   const remote = await fetchRemoteTeam(env, { fetchImpl });
   assert.equal(remote.found, true);
   const cfg = parseSessionConfig(env, remote.team); // no TEAM_CONFIG at all
-  assert.deepEqual(cfg.team, { name: 'Design team', transcriptChannelId: TXT, save: true, post: true, dmUserId: '', backupChannelId: '', glossary: 'LiteCut', language: 'en' });
+  assert.deepEqual(cfg.team, { name: 'Design team', transcriptChannelId: TXT, save: true, post: true, dmUserId: '', backupChannelId: '', glossary: 'LiteCut', language: 'en', summaryChannelId: '', linkChannelId: '', audioChannelId: '', setupName: '' });
   assert.equal(cfg.sessionId, 'sess1234');
 });
 
@@ -414,7 +418,7 @@ test('contract: the recorder\'s fetchRemoteTeam and the Worker agree, end to end
 test('getChannel: parses a channel, reports 403/404 and network errors, sends the bot header', async () => {
   const make = (res) => createDiscordClient({ token: 'tkn', apiBase: 'https://d.example/api', fetchImpl: async (url, init) => { make.seen = { url, init }; return res(); } });
   const ok = make(() => new Response(JSON.stringify({ id: VC, type: 2, guild_id: GUILD, name: 'Design Sync' }), { status: 200 }));
-  assert.deepEqual(await ok.getChannel(VC), { ok: true, channel: { id: VC, type: 2, guildId: GUILD, name: 'Design Sync' } });
+  assert.deepEqual(await ok.getChannel(VC), { ok: true, channel: { id: VC, type: 2, guildId: GUILD, name: 'Design Sync', hiddenFromEveryone: false } });
   assert.equal(make.seen.url, `https://d.example/api/channels/${VC}`);
   assert.equal(make.seen.init.headers.Authorization, 'Bot tkn');
   assert.deepEqual(await make(() => new Response('', { status: 404 })).getChannel(VC), { ok: false, status: 404, error: 'HTTP 404' });
@@ -422,4 +426,9 @@ test('getChannel: parses a channel, reports 403/404 and network errors, sends th
   assert.equal((await make(() => { throw new Error('offline'); }).getChannel(VC)).ok, false);
   assert.equal((await make(() => new Response('junk', { status: 200 })).getChannel(VC)).ok, false);
   assert.equal((await make(() => new Response(JSON.stringify({ id: VC, type: 1 }), { status: 200 })).getChannel(VC)).channel.guildId, null); // a DM channel has no server
+  // A channel whose own permissions deny View Channel to @everyone (the role with the server's id) counts as hidden from everyone.
+  const hidden = make(() => new Response(JSON.stringify({ id: TXT, type: 0, guild_id: GUILD, name: 'p', permission_overwrites: [{ id: GUILD, type: 0, allow: '0', deny: String(1 << 10) }] }), { status: 200 }));
+  assert.equal((await hidden.getChannel(TXT)).channel.hiddenFromEveryone, true);
+  const allowed = make(() => new Response(JSON.stringify({ id: TXT, type: 0, guild_id: GUILD, name: 'p', permission_overwrites: [{ id: GUILD, type: 0, allow: String(1 << 10), deny: '0' }, { id: ADMIN, type: 1, allow: '0', deny: String(1 << 10) }] }), { status: 200 }));
+  assert.equal((await allowed.getChannel(TXT)).channel.hiddenFromEveryone, false, 'a member overwrite is not @everyone');
 });

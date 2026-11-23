@@ -17,8 +17,9 @@ import {
   retryJobLater,
   updateMeeting,
 } from './store.js';
-import { allowedMentionsFor, reminderText, startText } from './messages.js';
+import { allowedMentionsFor, recordingStatusLine, reminderText, startText } from './messages.js';
 import { autoRecord } from './auto-record.js';
+import { parseChannelLink } from './voice-link.js';
 
 export const GRACE_SEC = 600; // don't send a job that is more than 10 minutes late
 export const MAX_ATTEMPTS = 4;
@@ -71,18 +72,23 @@ async function processJob({ db, discord, nowSec, recorder = null }, job, summary
   }
 
   // At the start time, record the meeting if its location is a link to a usable Discord voice channel. This never decides the job's
-  // outcome: the start message below is posted either way, and an error here is only logged (reason codes, never the location).
+  // outcome: the start message below is posted either way, and an error here is only logged (reason phrases, never the location).
+  // The outcome IS shown: one fixed line under the start message (recording, or why not, and any fallback to the Default setup).
+  // A retried start job finds the session it already made, so it says "already started" instead of recording twice.
   // A job that is only a little late still records (the lateness check above is the limit, 10 minutes).
+  let recordingLine = null;
   if (job.kind === 'start') {
     try {
       const r = await autoRecord({ db, discord, recorder, meeting, fireAt: job.fire_at, nowSec });
-      console.log(`auto-record meeting ${meeting.id}: ${r.started ? 'started' : `not started (${r.reason})`}`);
+      console.log(`auto-record meeting ${meeting.id}: ${r.started ? `started${r.fallback ? ' (named setup missing: Default used)' : ''}` : `not started (${r.reason})`}`);
+      recordingLine = recordingStatusLine(r);
     } catch (e) {
       console.error(`auto-record meeting ${meeting.id} failed unexpectedly: ${String(e?.name ?? 'Error')}`);
+      if (parseChannelLink(meeting.location) && recorder) recordingLine = '⚠️ Not recorded: something went wrong while starting the recorder.';
     }
   }
 
-  const content = job.kind === 'reminder' ? reminderText(meeting) : startText(meeting);
+  const content = job.kind === 'reminder' ? reminderText(meeting) : startText(meeting, { recordingLine });
   const res = await discord.postMessage(meeting.channel_id, {
     content,
     allowedMentions: allowedMentionsFor(meeting, { ping: true }),

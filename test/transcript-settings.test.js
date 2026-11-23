@@ -166,6 +166,7 @@ test('config endpoint: no options -> the start channel, save and post on; the st
   const [s] = t.db.sql('SELECT id FROM recording_sessions');
   assert.deepEqual(await config(t.db, s.id), {
     voice_channel_id: VC, guild_id: GUILD, name: 'Design', transcript_channel_id: START, save: true, post: true, dm_user_id: ADMIN, backup_channel_id: null, glossary: '', language: 'en',
+    summary_channel_id: null, link_channel_id: null, audio_channel_id: null, setup_name: 'Default', // /start-recording uses the Default setup
   });
 });
 
