@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EDITOR_SCRIPT } from '../src/editor-script.js';
 import worker from '../src/index.js';
 import { createTestDb } from './helpers/d1.js';
 import { cleanSummaryEdit, MAX_SUMMARY_EDIT_CHARS } from '../src/recording-store.js';
@@ -82,7 +83,7 @@ test('cleanSummaryEdit: normalises newlines, strips control characters, refuses 
   assert.ok(!JSON.stringify(long).includes('xxxx'), 'the refusal never repeats the text');
 });
 
-test('GET /t/<token>/admin shows the editor with the current summary, and the transcript is nowhere on it', async () => {
+test('GET /t/<token>/admin shows the summary as readers see it, editable, plus the text-box fallback; the transcript is nowhere on it', async () => {
   const t = setup();
   const path = await stored(t);
   const res = await t.send(`${path}/admin`);
@@ -90,14 +91,18 @@ test('GET /t/<token>/admin shows the editor with the current summary, and the tr
   assert.match(res.headers.get('Content-Security-Policy'), /form-action 'self'/);
   assert.match(res.headers.get('Cache-Control'), /no-store/);
   const html = await res.text();
-  assert.match(html, /<h1>Edit the summary<\/h1>/);
-  assert.match(html, /<textarea id="summary" name="summary"[^>]*>\n\*\*Summary\*\*/);
+  assert.match(html, /<h1>Meeting summary<\/h1>/);
+  assert.match(html, /<div id="notes" class="notes" data-version="0"><h2><span class="hash" aria-hidden="true">#<\/span>Summary<\/h2>/, 'drawn as the reader page draws it');
+  assert.match(html, /<noscript>[\s\S]*<textarea id="summary" name="summary"[^>]*>\n\*\*Summary\*\*[\s\S]*<\/noscript>/, 'the text box is the fallback without JavaScript');
   assert.ok(html.includes('Alice said the budget is forty thousand'));
   assert.ok(!html.includes('the budget is forty thousand dollars'), 'transcript text is not on the page');
   assert.ok(!html.includes('Restore the generated summary'), 'nothing to restore before an edit');
-  assert.ok(!/<script|<a[\s>]|<img/i.test(html.replace('<a class="brand" href="/">VC Bot</a>', '')));
-  // the page has no way to send transcript text anywhere: its only fields are the summary and the restore button
-  assert.deepEqual([...html.matchAll(/<(?:textarea|input)[^>]*name="([^"]+)"/g)].map((m) => m[1]), ['summary']);
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  assert.deepEqual(scripts, [EDITOR_SCRIPT], 'the only script is the editor, allowed by its hash');
+  assert.ok(!/<a[\s>]|<img/i.test(html.replace('<a class="brand" href="/">VC Bot</a>', '')));
+  // the page has no way to send transcript text anywhere: its only fields are the summary text box and the AI instruction
+  const fields = [...html.matchAll(/<(?:textarea|input)[^>]*name="([^"]+)"/g)].map((m) => m[1]);
+  assert.ok(fields.includes('summary') && fields.every((f) => f === 'summary' || f === 'ai'), fields.join(','));
 });
 
 test('POST saves an edit: the public page shows it, the generated summary and the transcript are untouched', async () => {

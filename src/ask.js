@@ -50,9 +50,11 @@ export function questionLimits(env) {
 // Gemma took 2.4 s and 80 Neurons per answer on average, Llama 4.8 s and 216, so about 2.7 times as many questions fit in the
 // daily Q&A cap. Llama was slightly more careful (once Gemma stated as fact what was only possible), so it stays available.
 // Thinking is off for Gemma 4: with it on, the model can spend the whole output limit reasoning and return nothing.
+// context: the model's window in tokens (prompt and answer together), from Cloudflare's model pages. A request that would not
+// fit is not sent to that model (the next one in the order is tried), instead of failing at Cloudflare.
 export const QA_CLOUDFLARE_MODELS = {
-  'cloudflare-gemma': { model: GEMMA_MODEL, extra: { chat_template_kwargs: { enable_thinking: false } } },
-  'cloudflare-llama': { model: LLAMA_MODEL, extra: {} },
+  'cloudflare-gemma': { model: GEMMA_MODEL, extra: { chat_template_kwargs: { enable_thinking: false } }, context: 256_000 },
+  'cloudflare-llama': { model: LLAMA_MODEL, extra: {}, context: 24_000 },
 };
 export const QA_PROVIDERS = [...Object.keys(QA_CLOUDFLARE_MODELS), 'groq-gpt-oss'];
 export const QA_DEFAULT_ORDER = ['cloudflare-gemma', 'groq-gpt-oss'];
@@ -275,7 +277,8 @@ function baseUrl(env) {
 }
 
 /** Returns { ok: true, text } or { ok: false, reason: 'busy' | 'unavailable' }. Never throws, never leaks the key or a response body. */
-export async function askGroq(env, messages, { fetchImpl } = {}) {
+/** reasoningEffort: "low" | "medium" | "high" for gpt-oss (its reasoning counts inside max_completion_tokens); unset = Groq's default. */
+export async function askGroq(env, messages, { fetchImpl, maxTokens = QA_OUTPUT_TOKENS, maxChars = 6000, timeoutMs = 25_000, reasoningEffort = null } = {}) {
   const doFetch = fetchImpl ?? ((...a) => fetch(...a));
   let res;
   try {
@@ -285,10 +288,11 @@ export async function askGroq(env, messages, { fetchImpl } = {}) {
       body: JSON.stringify({
         model: String(env.LLM_MODEL || MODEL_DEFAULT),
         temperature: 0.2,
-        max_completion_tokens: QA_OUTPUT_TOKENS,
+        max_completion_tokens: maxTokens,
+        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         messages,
       }),
-      signal: AbortSignal.timeout(25_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     return { ok: false, reason: 'unavailable' };
@@ -298,7 +302,7 @@ export async function askGroq(env, messages, { fetchImpl } = {}) {
   try {
     const text = (await res.json())?.choices?.[0]?.message?.content;
     if (typeof text !== 'string' || !text.trim()) return { ok: false, reason: 'unavailable' };
-    return { ok: true, text: text.trim().slice(0, 6000) };
+    return { ok: true, text: text.trim().slice(0, maxChars) };
   } catch {
     return { ok: false, reason: 'unavailable' };
   }
@@ -320,11 +324,11 @@ function withTimeout(promise, ms) {
  * { ok: false, reason: 'busy' | 'allowance' | 'unavailable' }. Never throws and never exposes an error message:
  * the caller falls back to Groq on any failure. `neurons` comes from the response's own usage figure when there is one.
  */
-export async function askCloudflare(env, messages, { timeoutMs = 60_000, model = GEMMA_MODEL, extra = QA_CLOUDFLARE_MODELS['cloudflare-gemma'].extra } = {}) {
+export async function askCloudflare(env, messages, { timeoutMs = 60_000, model = GEMMA_MODEL, extra = QA_CLOUDFLARE_MODELS['cloudflare-gemma'].extra, maxTokens = QA_OUTPUT_TOKENS, maxChars = 6000 } = {}) {
   if (typeof env?.AI?.run !== 'function') return { ok: false, reason: 'unavailable' };
   let res;
   try {
-    res = await withTimeout(env.AI.run(model, { ...extra, messages, max_tokens: QA_OUTPUT_TOKENS, temperature: 0.2 }), timeoutMs);
+    res = await withTimeout(env.AI.run(model, { ...extra, messages, max_tokens: maxTokens, temperature: 0.2 }), timeoutMs);
   } catch (e) {
     const m = String(e?.message ?? e);
     if (/4006|daily free allocation|used up|neurons/i.test(m)) return { ok: false, reason: 'allowance' };
@@ -338,7 +342,7 @@ export async function askCloudflare(env, messages, { timeoutMs = 60_000, model =
     prompt_tokens: messages.reduce((n, m) => n + estimateTokens(m.content), 0),
     completion_tokens: estimateTokens(text),
   };
-  return { ok: true, text: text.trim().slice(0, 6000), neurons: chatNeurons(model, usage) };
+  return { ok: true, text: text.trim().slice(0, maxChars), neurons: chatNeurons(model, usage) };
 }
 
 /**
@@ -346,12 +350,26 @@ export async function askCloudflare(env, messages, { timeoutMs = 60_000, model =
  * Cloudflare Neurons are added to the daily meter. Returns { ok: true, text, model } or { ok: false, reason }.
  * Logs the model name, Neuron count and duration only: never the question, the excerpts or the answer.
  */
-export async function answerQuestion(env, messages, nowSec) {
+/**
+ * limits (the /admin AI edit returns whole notes; Q&A uses the defaults): { maxTokens, maxChars, timeoutMs, groqReasoningEffort,
+ * groqReasoningTokens }. A Cloudflare model whose context window cannot hold the prompt plus maxTokens is skipped. For Groq's
+ * gpt-oss, groqReasoningTokens is added to the output limit because its reasoning is counted inside it.
+ */
+export async function answerQuestion(env, messages, nowSec, limits = {}) {
   let reason = 'unavailable';
+  const { maxTokens = QA_OUTPUT_TOKENS, maxChars = 6000, timeoutMs, groqReasoningEffort = null, groqReasoningTokens = 0 } = limits;
+  const promptTokens = messages.reduce((n, m) => n + estimateTokens(m.content), 0);
   for (const name of usableQaProviders(env)) {
     const t0 = Date.now();
     const cloudflare = isCloudflareQa(name);
-    const r = cloudflare ? await askCloudflare(env, messages, QA_CLOUDFLARE_MODELS[name]) : await askGroq(env, messages);
+    if (cloudflare && promptTokens + maxTokens > QA_CLOUDFLARE_MODELS[name].context) {
+      console.log(`qa ${name} skipped: the request does not fit its context window`);
+      continue;
+    }
+    const timing = timeoutMs ? { timeoutMs } : {};
+    const r = cloudflare
+      ? await askCloudflare(env, messages, { ...QA_CLOUDFLARE_MODELS[name], maxTokens, maxChars, ...timing })
+      : await askGroq(env, messages, { maxTokens: maxTokens + groqReasoningTokens, maxChars, reasoningEffort: groqReasoningEffort, ...timing });
     if (r.ok) {
       if (cloudflare) {
         try {

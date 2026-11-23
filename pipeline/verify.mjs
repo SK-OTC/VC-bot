@@ -76,7 +76,7 @@ export function stem(word) {
 
 /**
  * The words of an item that are worth checking, without the owner's name or the timestamps: words of 4+ letters that
- * are not filler, plus short words that are clearly names or acronyms (written "Tim" or "PR", "FPS"), which carry meaning.
+ * are not filler, plus short words that are clearly names or acronyms (written "Raj" or "PR", "FPS"), which carry meaning.
  */
 export function itemWords(line) {
   let text = line.replace(/^\s*[-*•]\s*/, '').replace(TS_ALL, ' ');
@@ -86,7 +86,7 @@ export function itemWords(line) {
   for (const raw of String(text).match(/[\p{L}\p{N}]+/gu) ?? []) {
     const w = raw.toLowerCase();
     if (/^\d+$/.test(w)) continue;
-    const named = (/^\p{Lu}{2,3}$/u.test(raw) || /^\p{Lu}\p{Ll}{2}$/u.test(raw)) && !SHORT_STOP.has(w); // "PR", "FPS", "Tim"
+    const named = (/^\p{Lu}{2,3}$/u.test(raw) || /^\p{Lu}\p{Ll}{2}$/u.test(raw)) && !SHORT_STOP.has(w); // "PR", "FPS", "Raj"
     if ((w.length >= 4 && !STOP.has(w)) || named) out.push(w);
   }
   return [...new Set(out)];

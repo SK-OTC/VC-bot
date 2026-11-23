@@ -254,9 +254,9 @@ test('verify: the two checks are 30 seconds for lines near the timestamp and 60 
   assert.equal(flagged('00:10:36'), 1); // 31 s after the line ends: check 1 fails
   assert.equal(flagged('00:11:00'), 1); // no line within 30 s
   // a long explanation covers the time it takes to say (2.5 words a second), up to the next line
-  const long = `[00:24:06] Farah: ${'we talk about many pre-processing things here '.repeat(30).trim()} and Saad's team may be handling the probe check`;
+  const long = `[00:24:06] Lena: ${'we talk about many pre-processing things here '.repeat(30).trim()} and Alisha's team may be handling the probe check`;
   const longBody = [long, '[00:26:00] B: ok'].join('\n');
-  assert.equal(verifySummary({ summaryText: '**Next steps**\n- Farah: ask Saad whether his team is handling the probe [00:25:30]', transcriptBody: longBody }).flagged, 0, '84 s into a ~2-minute line');
+  assert.equal(verifySummary({ summaryText: '**Next steps**\n- Lena: ask Alisha whether his team is handling the probe [00:25:30]', transcriptBody: longBody }).flagged, 0, '84 s into a ~2-minute line');
   const words = long.split(': ').slice(1).join(': ').split(/\s+/).length; // 219 words, about 88 s
   assert.equal(parseTranscriptLines(longBody)[0].end, 24 * 60 + 6 + Math.min(114, words / 2.5), 'the line ends when its words are said');
   assert.equal(parseTranscriptLines('[00:00:01] A: hi\n[00:00:03] B: yes')[0].end, 3, 'never past the next line');
@@ -267,18 +267,18 @@ test('verify: the two checks are 30 seconds for lines near the timestamp and 60 
 });
 
 test('verify: "Next steps" is checked; [mm:ss], ranges, "**Heading**:" and "## Heading" are read; "Owner: none recorded" is skipped', () => {
-  const body = ['[00:24:06] Farah: I will talk to Saad about the probe today', '[00:34:18] Farah: I will check your PR today'].join('\n');
+  const body = ['[00:24:06] Lena: I will talk to Alisha about the probe today', '[00:34:18] Lena: I will check your PR today'].join('\n');
   const notes = [
     'Title',
     '',
     '**Topic**',
-    '- Saad owns the probe, says nothing checkable here',
+    '- Alisha owns the probe, says nothing checkable here',
     '',
     '**Next steps**',
-    '- Farah: talk to Saad about the probe [00:24:06]',
-    '- Farah: check the PR today [00:24:06‑00:24:30]', // a range, with the non-breaking hyphen Groq's model wrote
-    '- Farah: check the PR today [34:18]', // [mm:ss]
-    '- Farah: book the venue in Lisbon [00:34:18]',
+    '- Lena: talk to Alisha about the probe [00:24:06]',
+    '- Lena: check the PR today [00:24:06‑00:24:30]', // a range, with the non-breaking hyphen Groq's model wrote
+    '- Lena: check the PR today [34:18]', // [mm:ss]
+    '- Lena: book the venue in Lisbon [00:34:18]',
     '- Unassigned: none recorded',
   ].join('\n');
   const r = verifySummary({ summaryText: notes, transcriptBody: body });
@@ -291,9 +291,9 @@ test('verify: "Next steps" is checked; [mm:ss], ranges, "**Heading**:" and "## H
   assert.ok(lines[9].endsWith(UNVERIFIED), 'invented');
   assert.ok(!lines[3].includes(UNVERIFIED), 'topic bullets are not checked');
   for (const heading of ['**Next steps**:', '## Next steps']) {
-    assert.equal(verifySummary({ summaryText: `${heading}\n- Farah: book the venue in Lisbon [00:34:18]`, transcriptBody: body }).flagged, 1, heading);
+    assert.equal(verifySummary({ summaryText: `${heading}\n- Lena: book the venue in Lisbon [00:34:18]`, transcriptBody: body }).flagged, 1, heading);
   }
-  assert.deepEqual(itemWords('- Farah: check the PR today [00:24:06-00:24:30]'), ['check', 'pr', 'today'], 'a range is not read as words; "PR" is');
+  assert.deepEqual(itemWords('- Lena: check the PR today [00:24:06-00:24:30]'), ['check', 'pr', 'today'], 'a range is not read as words; "PR" is');
 });
 
 test('verify: needs two of the item\'s words (stems match: sending/send); never doubles the marker; handles odd input', () => {
@@ -545,15 +545,15 @@ test('verify: word forms, names and acronyms count; generic words (dates, "compl
   for (const [a, b] of [['tests', 'testing'], ['completed', 'complete'], ['planned', 'plan'], ['rotation', 'rotate'], ['handling', 'handle'], ['studies', 'study'], ['validation', 'validate']]) assert.equal(stem(a), stem(b), `${a} ~ ${b}`);
   assert.notEqual(stem('test'), stem('text'));
   const body = [
-    '[00:23:17] Shreyas: should I raise a PR now or after the demo tomorrow?',
-    '[00:23:21] Farah: you can make the PR now, right after you are done testing',
-    '[00:32:22] Farah: ideally I want to complete everything by Friday',
-    '[00:34:06] Farah: then I will go over this with Tim when he is available',
+    '[00:23:17] Omar: should I raise a PR now or after the demo tomorrow?',
+    '[00:23:21] Lena: you can make the PR now, right after you are done testing',
+    '[00:32:22] Lena: ideally I want to complete everything by Friday',
+    '[00:34:06] Lena: then I will go over this with Raj when he is available',
   ].join('\n');
   const flagged = (item) => verifySummary({ summaryText: `**Next steps**\n- ${item}`, transcriptBody: body }).flagged;
-  assert.equal(flagged('Shreyas: raise a PR after completing the tests [00:23:21]'), 0, '"PR" and "tests"/"testing" count');
-  assert.equal(flagged('Farah: go over the plan with Tim when available [00:34:06]'), 0, 'a short name counts');
-  assert.equal(flagged('Shreyas: complete the rotation task by Friday [00:32:22]'), 1, 'only "complete" and "Friday" match: generic, so not enough');
-  assert.equal(flagged('Shreyas: book the venue in Lisbon [00:23:21]'), 1, 'invented');
-  assert.deepEqual(itemWords('- Ana: Add the FPS check and ask Tim [00:01:00]'), ['fps', 'check', 'tim'], '"Add" and "ask" are too common to count');
+  assert.equal(flagged('Omar: raise a PR after completing the tests [00:23:21]'), 0, '"PR" and "tests"/"testing" count');
+  assert.equal(flagged('Lena: go over the plan with Raj when available [00:34:06]'), 0, 'a short name counts');
+  assert.equal(flagged('Omar: complete the rotation task by Friday [00:32:22]'), 1, 'only "complete" and "Friday" match: generic, so not enough');
+  assert.equal(flagged('Omar: book the venue in Lisbon [00:23:21]'), 1, 'invented');
+  assert.deepEqual(itemWords('- Ana: Add the FPS check and ask Raj [00:01:00]'), ['fps', 'check', 'raj'], '"Add" and "ask" are too common to count');
 });

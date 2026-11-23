@@ -638,12 +638,32 @@ contrast). They are not that product's own dark colours. All colours are variabl
 at a line boundary, with a trailing `…`, leaving room for the whole link. The web page always shows the full summary. The link
 expires after `SHARE_LINK_DAYS` (default 30).
 
-**Editing the summary: `/t/<token>/admin`.** Add `/admin` to the end of the link to edit the summary text (names, bullets,
-headings). There is **no separate sign-in: anyone who has the link can edit**, so the link is a read-and-edit key. What contains
-that: the generated summary is never overwritten (an edit is stored beside it, and "Restore the generated summary" brings it
-back); the transcript has no editing route at all; the form works only from the page itself; everything is escaped; and an
-expired link cannot edit. Edited text is shown on the page exactly as written (the generated action items are not added beside
-it), and it is what the question box is given as the meeting's summary.
+**Editing the summary: `/t/<token>/admin`.** Add `/admin` to the end of the link. The summary appears exactly as readers see
+it, and you edit it in place, as in Granola: click and type, select text for a toolbar (bold, italic, underline,
+strikethrough, heading, quote, subtext, bulleted and numbered lists; Ctrl/Cmd+B, I, U, and Ctrl/Cmd+Shift+X for
+strikethrough), Tab and Shift+Tab to indent a list item. Changes are **saved automatically** 1.5 seconds after you stop typing
+("All changes saved" in the corner). Pasted text comes in as plain text. The page stores the notes in their text format
+(Discord's marks: `**bold**`, `*italic*`, `__underline__`, `~~strikethrough~~`, `> ` quote, `-# ` subtext, `- ` and `1. `
+lists), so the reader page, Q&A and "Restore" keep working; the conversion is in `src/editor-core.js` and is tested to
+round-trip exactly. Two people editing at once cannot silently overwrite each other: each save carries the version it
+started from (`summary_version`, migration 0018), and a save from an older version is refused, with the choice to load the
+other version or keep yours. Without JavaScript the page falls back to a plain text box.
+
+**Edit with AI** (the right-hand panel on `/admin`, when a Q&A model is available): type an instruction such as "Change all
+occurrences of Toma to Thomas" or "Remove the second section". The model (the Q&A model, Gemma 4 by default) gets the notes
+as they are in the editor plus the meeting's transcript, and **proposes** the change: renames are applied in code to whole
+words only (so "Aliyah" never changes part of a longer word such as "Aliyahs"), and anything else comes back as whole new notes. The changed lines are
+highlighted and **nothing is saved until you press Accept** (Discard puts the notes back). Tested on 2026-11-23 with five
+instructions on a real meeting: both renames, a section removal, an addition from the transcript, and an off-topic request
+(refused) all came out right, at about 80 Neurons and 1 to 13 seconds each. AI edits count against the same per-link
+question limits and the daily Q&A Neuron cap as questions.
+
+There is **no separate sign-in: anyone who has the link can edit**, so the link is a read-and-edit key. What contains that:
+the generated summary is never overwritten (an edit is stored beside it, and "Restore the generated summary" brings it back);
+the transcript has no editing route at all; posts work only from the page itself; everything is escaped (the AI's proposal
+too); the only script is the editor, allowed by its hash; and an expired link cannot edit. Edited text is shown exactly as
+written (the generated action items are not added beside it), and it is what the question box is given as the summary.
+Edits change the web page only, not the summary message already posted in Discord.
 
 Settings in `wrangler.toml`: `SHARE_LINK_DAYS` (default 30; `0` turns the automatic links off) and optionally
 `PUBLIC_URL` (an https address, for example your own domain, to build links on instead of the Worker's address).
@@ -789,7 +809,7 @@ Llama 3.3 with the same prompts stayed vague. Temperature 0 did not make Gemma's
   of its timestamp (a line lasts until the next one starts, or as long as its words take to say), and do at least two of
   the item's words appear in what was said within 60 seconds, at least one of them specific (a date or a word like
   "complete" or "review" alone is not enough)? Word forms match ("tests"/"testing"), and short names and acronyms count
-  ("Tim", "PR", "FPS"). If not, the item is **kept** and ends with `(unverified)`. `[mm:ss]` and ranges are read too.
+  ("Raj", "PR", "FPS"). If not, the item is **kept** and ends with `(unverified)`. `[mm:ss]` and ranges are read too.
   Nothing is ever deleted; the job log shows only the count. On the 2026-11-23 test outputs this cut the marks from 26
   to 6, most of the 20 removed being correct items reworded; it checks that an item was talked about, not that its owner
   or date is right.

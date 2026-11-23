@@ -220,13 +220,30 @@ export function cleanSummaryEdit(raw) {
   return { ok: true, text };
 }
 
-export async function saveSummaryEdit(db, transcriptId, text, nowSec) {
-  await db.prepare('UPDATE transcripts SET summary_edited = ?, summary_edited_at = ? WHERE id = ?').bind(text, nowSec, transcriptId).run();
+/**
+ * Saves an edit. With `version` (the summary_version the editor started from) the save only happens if nobody else saved in
+ * between: returns { ok: true, version } with the new version, or { ok: false, conflict: true } (nothing changed). Without
+ * `version` (the plain form, which has no autosave) the edit is saved whatever the version.
+ */
+export async function saveSummaryEdit(db, transcriptId, text, nowSec, version = null) {
+  const checked = Number.isInteger(version);
+  // The new version comes back from the same statement (RETURNING). Reading it with a separate SELECT afterwards could pick up
+  // a version another editor wrote in between, and this editor would then overwrite their text without a conflict.
+  const row = await db
+    .prepare(
+      `UPDATE transcripts SET summary_edited = ?, summary_edited_at = ?, summary_version = summary_version + 1
+       WHERE id = ?${checked ? ' AND summary_version = ?' : ''}
+       RETURNING summary_version AS v`,
+    )
+    .bind(...[text, nowSec, transcriptId, ...(checked ? [version] : [])])
+    .first();
+  if (!row) return { ok: false, conflict: true };
+  return { ok: true, version: Number(row.v) || 0 };
 }
 
-/** Goes back to the generated summary. */
+/** Goes back to the generated summary. Counts as a new version, so an editor still open on the old text cannot overwrite it. */
 export async function clearSummaryEdit(db, transcriptId) {
-  await db.prepare('UPDATE transcripts SET summary_edited = NULL, summary_edited_at = NULL WHERE id = ?').bind(transcriptId).run();
+  await db.prepare('UPDATE transcripts SET summary_edited = NULL, summary_edited_at = NULL, summary_version = summary_version + 1 WHERE id = ?').bind(transcriptId).run();
 }
 
 export async function deleteRecordingSetup(db, voiceChannelId, guildId) {

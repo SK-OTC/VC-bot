@@ -2,7 +2,8 @@
 // Security rules for this file:
 //  * Every piece of text that came from speech, a Discord name, a language model or a reader is HTML-escaped first.
 //  * The page has no images and no links. Its only forms post back to the same address (CSP form-action 'self'). The one
-//    script (src/chat-script.js, only when questions are on) is allowed by its hash alone and nothing depends on it.
+//    scripts (src/chat-script.js on the reader page when questions are on, src/editor-script.js on /admin) are allowed by their
+//    hashes alone, and without them every page still works (plain forms).
 //  * The transcript itself is never put on the page: readers get the summary and can ask questions about the meeting.
 //  * The only markup that is not escaped text is what this file writes itself: tags, a few fixed icons, and the three
 //    inline marks made by `inline()` below, which wrap text that has already been escaped.
@@ -15,6 +16,7 @@
 // Granola's name, logo and fonts are not used.
 
 import { CHAT_SCRIPT, CHAT_SCRIPT_HASH } from './chat-script.js';
+import { EDITOR_SCRIPT, EDITOR_SCRIPT_HASH } from './editor-script.js';
 
 export const SECURITY_HEADERS = {
   'Content-Type': 'text/html; charset=utf-8',
@@ -23,8 +25,9 @@ export const SECURITY_HEADERS = {
   'Referrer-Policy': 'no-referrer',
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
-  // Scripts only by hash (the one in chat-script.js); fetch only to this same address (the answer is fetched without a reload).
-  'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; script-src '${CHAT_SCRIPT_HASH}'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`,
+  // Scripts only by hash (chat-script.js and editor-script.js); fetch only to this same address (answers and saves are fetched
+  // without a reload).
+  'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; script-src '${CHAT_SCRIPT_HASH}' '${EDITOR_SCRIPT_HASH}'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`,
   'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Resource-Policy': 'same-origin',
@@ -41,50 +44,93 @@ export function esc(value) {
 }
 
 /**
- * Escaped text with three marks made visible. Escaping happens FIRST, so the output can only contain the tags written here:
- * **bold** -> <strong>, [hh:mm:ss] -> a muted timestamp, (unverified) -> an italic mark.
+ * Escaped text with its marks made visible. Escaping happens FIRST, so the output can only contain the tags written here.
+ * The marks are Discord's (so the same text also reads right in Discord): **bold** -> <strong>, *italic* -> <em>,
+ * __underline__ -> <u>, ~~strikethrough~~ -> <s>; plus [hh:mm:ss] -> a muted timestamp and (unverified) -> an italic mark.
  */
-function inline(text) {
+export function inline(text) {
   return esc(text)
     .replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/__([^_\n]+?)__/g, '<u>$1</u>')
+    .replace(/~~([^~\n]+?)~~/g, '<s>$1</s>')
+    .replace(/(^|[^*\w])\*([^*\s](?:[^*\n]*?[^*\s])?)\*(?![*\w])/g, '$1<em>$2</em>')
     .replace(/\[(\d{1,2}:\d{2}:\d{2})\]/g, '<span class="ts">[$1]</span>')
     .replace(/\(unverified\)/g, '<span class="unv">(unverified)</span>');
 }
 
+// The kinds of line the notes are made of (the same text format the model writes and the /admin editor saves).
+const LINE_HEADING = /^\s*\*\*([^*]+)\*\*:?\s*$/; // a line that is ONLY one bold phrase; two bold spans are ordinary text
+const LINE_HASH_HEADING = /^\s*#{1,3}\s+(.+)$/; // "## Heading"
+const LINE_SUBTEXT = /^\s*-#\s+(.*)$/; // Discord's subtext: "-# small print"
+const LINE_QUOTE = /^\s*>\s?(.*)$/; // "> a quote"
+const LINE_NUMBERED = /^(\s*)(\d{1,3})[.)]\s+(.*)$/; // "1. step"
+const LINE_BULLET = /^(\s*)[-*•]\s+(.*)$/; // "- point", indented by 2 (or 6) spaces for a sub-point
+
+/** How deep a list item is: 2+ spaces of indent is level 1, 6+ is level 2 (the format the model has always written). */
+export const listDepth = (indent) => {
+  const n = indent.replace(/\t/g, '  ').length;
+  return n >= 6 ? 2 : n >= 2 ? 1 : 0;
+};
+
 /**
- * The model's notes (headings in **bold**, bullets starting "- ") as headings, bullet lists and paragraphs.
- * Bullets indented by 2+ spaces are nested (up to two levels). A final line "Summary written by ..." becomes a quiet byline.
+ * The notes as headings, bullet and numbered lists, quotes, subtext and paragraphs. List items indented by 2+ spaces are nested
+ * (up to two levels). A final line "Summary written by ..." becomes a quiet byline.
+ * opts.changed: a Set of line numbers (0-based) whose block gets class "chg" (the AI edit preview highlights changed lines).
  */
-export function renderNote(text) {
+export function renderNote(text, { changed = null } = {}) {
   const out = [];
-  let list = false;
+  let list = null; // 'ul' | 'ol' | null
   const closeList = () => {
-    if (list) out.push('</ul>');
-    list = false;
+    if (list) out.push(`</${list}>`);
+    list = null;
   };
-  for (const raw of String(text ?? '').split('\n')) {
-    const line = raw.replace(/\s+$/, '');
+  const openList = (kind) => {
+    if (list === kind) return;
+    closeList();
+    out.push(`<${kind}>`);
+    list = kind;
+  };
+  const lines = String(text ?? '').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\s+$/, '');
+    const chg = changed?.has(i) ? ' chg' : '';
+    const cls = (base) => (base || chg ? ` class="${(base + chg).trim()}"` : '');
     if (!line.trim()) {
       closeList();
       continue;
     }
-    const heading = /^\s*\*\*([^*]+)\*\*:?\s*$/.exec(line); // a line that is ONLY one bold phrase; two bold spans are ordinary text
+    const heading = LINE_HEADING.exec(line) ?? LINE_HASH_HEADING.exec(line);
     if (heading) {
       closeList();
-      out.push(`<h2><span class="hash" aria-hidden="true">#</span>${esc(heading[1].trim())}</h2>`);
+      out.push(`<h2${cls('')}><span class="hash" aria-hidden="true">#</span>${inline(heading[1].trim())}</h2>`);
       continue;
     }
-    const bullet = /^(\s*)[-*•]\s+(.*)$/.exec(line);
+    const sub = LINE_SUBTEXT.exec(line);
+    if (sub) {
+      closeList();
+      out.push(`<p${cls('sub')}>${inline(sub[1])}</p>`);
+      continue;
+    }
+    const quote = LINE_QUOTE.exec(line);
+    if (quote) {
+      closeList();
+      out.push(`<blockquote${cls('')}>${inline(quote[1])}</blockquote>`);
+      continue;
+    }
+    const numbered = LINE_NUMBERED.exec(line);
+    if (numbered) {
+      openList('ol');
+      out.push(`<li${cls(`d${listDepth(numbered[1])}`)} value="${Number(numbered[2])}">${inline(numbered[3])}</li>`);
+      continue;
+    }
+    const bullet = LINE_BULLET.exec(line);
     if (bullet) {
-      if (!list) out.push('<ul>');
-      list = true;
-      const indent = bullet[1].replace(/\t/g, '  ').length;
-      const depth = indent >= 6 ? 2 : indent >= 2 ? 1 : 0;
-      out.push(`<li class="d${depth}">${inline(bullet[2])}</li>`);
+      openList('ul');
+      out.push(`<li${cls(`d${listDepth(bullet[1])}`)}>${inline(bullet[2])}</li>`);
       continue;
     }
     closeList();
-    out.push(/^Summary written by /.test(line.trim()) ? `<p class="byline">${esc(line.trim())}</p>` : `<p>${inline(line.trim())}</p>`);
+    out.push(/^Summary written by /.test(line.trim()) ? `<p${cls('byline')}>${esc(line.trim())}</p>` : `<p${cls('')}>${inline(line.trim())}</p>`);
   }
   closeList();
   return out.join('');
@@ -189,6 +235,27 @@ textarea:focus-visible{outline:none}
 .btn:active{transform:scale(.97)}
 .btn.primary{background:var(--title);color:var(--bg);border-color:var(--title)}
 .ok{color:var(--ok);font-size:.9rem}
+blockquote{margin:.5rem 0;padding:.05rem 0 .05rem .85rem;border-left:3px solid var(--chip-line)}
+p.sub{font-size:.8rem;color:var(--chip-text)}
+ol{margin:.15rem 0 .3rem;padding-left:1.35rem}
+ol li.d1{margin-left:1.1rem;list-style-type:lower-alpha}
+ol li.d2{margin-left:2.2rem;list-style-type:lower-roman}
+em{font-style:italic}
+.chg{background:rgba(143,209,158,.12);box-shadow:-.5rem 0 0 rgba(143,209,158,.55);border-radius:3px}
+.notes.editing{outline:none;caret-color:var(--title);min-height:6rem}
+.notes.editing:focus{outline:none}
+.notes.previewing{opacity:.95;cursor:default}
+.editbar{display:flex;justify-content:flex-end;min-height:1.2rem;margin:-2.4rem 0 1.2rem}
+.save{font-size:.78rem;color:var(--chip-text)}
+.save.bad{color:var(--err)}
+.bar{display:flex;flex-wrap:wrap;align-items:center;gap:.6rem;border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:.6rem .8rem;margin:0 0 1.2rem;font-size:.85rem;color:var(--title)}
+.bar .msg{flex:1 1 14rem}
+.toolbar{position:fixed;z-index:40;display:flex;gap:2px;padding:4px;border:1px solid var(--line);border-radius:10px;background:var(--panel);box-shadow:0 6px 24px rgba(0,0,0,.45)}
+.toolbar button{min-width:30px;height:30px;padding:0 .45rem;border:0;border-radius:7px;background:transparent;color:var(--text);font:inherit;font-size:.85rem;cursor:pointer}
+.toolbar button:hover,.toolbar button[aria-pressed="true"]{background:var(--send);color:var(--title)}
+.toolbar .sep{width:1px;margin:4px 3px;background:var(--line)}
+[hidden]{display:none!important}
+.layout:has(>.chat[hidden]){grid-template-columns:minmax(0,1fr)}
 .missing{max-width:30rem;margin:18vh auto 0;padding:0 24px}
 .missing h1{font-size:1.8rem}
 @media (max-width:900px){
@@ -224,31 +291,42 @@ const SUGGESTIONS = [
 ];
 
 /**
+ * The notes as text: a person's edit (made on the /admin page) if there is one, otherwise the generated summary. summary_text
+ * already holds the next steps ("Next steps", or "Action items" before 2026-11-23); the separate action items are only added to
+ * a generated summary that lacks both headings (an edited one is shown exactly as edited). The reader page and the editor both
+ * start from this, so /admin shows exactly what readers see.
+ */
+export function notesText(t) {
+  if (t.summary_edited) return t.summary_edited;
+  let text = t.summary_text ?? '';
+  if (t.actions_text && !/\*\*\s*(?:Action items|Next steps)\s*\*\*/i.test(text)) text = `${text ? `${text}\n\n` : ''}**Action items**\n${t.actions_text}`;
+  return text;
+}
+
+/** The people and date chips under the title (the same on both pages). */
+function chipsHtml(t) {
+  let speakers = [];
+  try {
+    const parsed = JSON.parse(t.speakers ?? '[]');
+    if (Array.isArray(parsed)) speakers = parsed.map((sp) => String(sp?.name ?? '')).filter(Boolean);
+  } catch {
+    // no speaker list
+  }
+  return (
+    (speakers.length ? `<span class="chip">${PEOPLE}${speakers.map(esc).join(', ')}</span>` : '') +
+    `<span class="chip">${CALENDAR}${esc(dayLabel(t.started_at))}</span>`
+  );
+}
+
+/**
  * qa: { enabled, maxChars, question?, answer?, error? }. `question` is shown back to the reader (escaped), `answer`
  * comes from the model (escaped, only bold, timestamps and (unverified) are marked up), `error` is one of our own fixed messages.
  */
 export function transcriptPage(t, qa = { enabled: false }) {
-  let speakers = [];
-  try {
-    const parsed = JSON.parse(t.speakers ?? '[]');
-    if (Array.isArray(parsed)) speakers = parsed.map((s) => String(s?.name ?? '')).filter(Boolean);
-  } catch {
-    // no speaker list
-  }
 
-  // The notes: a person's edit (made on the /admin page) if there is one, otherwise the generated summary. summary_text already
-  // holds the next steps ("Next steps", or "Action items" before 2026-11-23); the separate action items are only added to a
-  // generated summary that lacks both headings (an edited one is shown exactly as edited).
-  const shown = t.summary_edited || t.summary_text;
-  let notes = shown ? renderNote(shown) : '';
-  if (!t.summary_edited && t.actions_text && !/\*\*\s*(?:Action items|Next steps)\s*\*\*/i.test(t.summary_text ?? '')) {
-    notes += renderNote(`**Action items**\n${t.actions_text}`);
-  }
-  if (!notes) notes = '<p>No summary is available for this meeting.</p>';
-
-  const chips =
-    (speakers.length ? `<span class="chip">${PEOPLE}${speakers.map(esc).join(', ')}</span>` : '') +
-    `<span class="chip">${CALENDAR}${esc(dayLabel(t.started_at))}</span>`;
+  const shown = notesText(t);
+  const notes = shown ? renderNote(shown) : '<p>No summary is available for this meeting.</p>';
+  const chips = chipsHtml(t);
 
   const note =
     `<main class="note"><div class="article"><h1>Meeting summary</h1><div class="chips">${chips}</div>${notes}` +
@@ -276,26 +354,62 @@ export function transcriptPage(t, qa = { enabled: false }) {
   return shell('Meeting summary', `<div class="layout">${note}${chat}</div>`);
 }
 
+// The formatting toolbar (shown above a selection by src/editor-script.js). The commands are the browser's editing commands,
+// plus quote, subtext, the two lists and heading, which the script handles.
+const TOOLBAR = [
+  ['bold', '<strong>B</strong>', 'Bold (Ctrl+B)'],
+  ['italic', '<em>I</em>', 'Italic (Ctrl+I)'],
+  ['underline', '<u>U</u>', 'Underline (Ctrl+U)'],
+  ['strikeThrough', '<s>S</s>', 'Strikethrough (Ctrl+Shift+X)'],
+  null,
+  ['heading', 'H', 'Heading'],
+  ['quote', '\u201C', 'Quote'],
+  ['sub', '<small>-#</small>', 'Subtext'],
+  null,
+  ['ul', '\u2022', 'Bulleted list'],
+  ['ol', '1.', 'Numbered list'],
+]
+  .map((b) => (b ? `<button type="button" data-cmd="${b[0]}" title="${b[2]}" aria-label="${b[2]}" aria-pressed="false">${b[1]}</button>` : '<span class="sep" aria-hidden="true"></span>'))
+  .join('');
+
 /**
- * The /admin page: edit the summary's text (names, bullets, headings). The transcript is not shown and cannot be edited here.
- * opts: { notice?, error?, draft? } — `notice` and `error` are our own fixed messages; `draft` is what the person typed, put back
- * in the box (escaped) when it was refused. Nothing here needs a script: both buttons are ordinary form posts to this same address.
+ * The /admin page: the summary drawn exactly as the reader page draws it, editable in place (src/editor-script.js), saved as you
+ * type, with an "Edit with AI" panel when a model is available. The transcript is not shown and cannot be edited here.
+ * Without JavaScript the <noscript> text box and the restore button work as plain form posts.
+ * opts: { notice?, error?, draft?, aiEnabled? }: `notice` and `error` are our own fixed messages; `draft` is what the person typed
+ * in the text box, put back (escaped) when it was refused.
  */
-export function adminPage(t, { notice = null, error = null, draft = null, max = 30_000 } = {}) {
-  const current = draft ?? t.summary_edited ?? t.summary_text ?? '';
+export function adminPage(t, { notice = null, error = null, draft = null, max = 30_000, aiEnabled = false } = {}) {
+  const current = draft ?? notesText(t);
   const edited = Boolean(t.summary_edited);
-  const body =
-    '<div class="layout solo"><main class="note"><div class="article edit">' +
-    '<h1>Edit the summary</h1>' +
-    `<p class="fine" style="margin-top:0">Anyone who has this link can change the summary here, so only share it with people you trust. The transcript itself cannot be edited. ${edited ? 'This summary has been edited; the generated one can be restored below.' : 'This is the generated summary.'}</p>` +
+  const version = Number(t.summary_version) || 0;
+  const note =
+    '<main class="note"><div class="article edit">' +
+    '<div class="editbar"><span id="save-status" class="save" role="status" aria-live="polite"></span></div>' +
+    `<h1>Meeting summary</h1><div class="chips">${chipsHtml(t)}</div>` +
     (notice ? `<p class="ok" role="status">${esc(notice)}</p>` : '') +
     (error ? `<p class="err" role="alert">${esc(error)}</p>` : '') +
+    '<div id="conflict" class="bar" role="alert" hidden><span class="msg">This summary was changed somewhere else after you opened it, so your last change was not saved.</span>' +
+    '<button class="btn" type="button" data-act="reload">Load their version</button><button class="btn primary" type="button" data-act="keep">Keep mine</button></div>' +
+    '<div id="preview" class="bar" role="status" hidden><span class="msg"></span>' +
+    '<button class="btn primary" type="button" data-act="accept">Accept</button><button class="btn" type="button" data-act="discard">Discard</button></div>' +
+    `<div id="notes" class="notes" data-version="${version}">${renderNote(current) || '<p><br></p>'}</div>` +
+    `<div id="toolbar" class="toolbar" role="toolbar" aria-label="Formatting" hidden>${TOOLBAR}</div>` +
+    '<noscript><p class="fine">Editing in place needs JavaScript. You can edit the notes as text instead:</p>' +
     '<form method="post" autocomplete="off"><label class="sr" for="summary">Summary</label>' +
     // the first newline after <textarea> is dropped by HTML parsing, so one is added to keep a leading blank line intact
     `<textarea id="summary" name="summary" rows="24" maxlength="${Number(max)}" required>\n${esc(current)}</textarea>` +
     '<div class="actions"><button class="btn primary" type="submit">Save changes</button></div></form>' +
+    '<p class="fine">A line that is only **bold text** is a heading. "- " starts a bullet and "1. " a numbered item (indent by two spaces for a sub-item), "> " a quote and "-# " small print. **bold**, *italic*, __underline__, ~~strikethrough~~. [hh:mm:ss] marks a time.</p></noscript>' +
     (edited ? '<form method="post"><div class="actions"><button class="btn" type="submit" name="restore" value="1">Restore the generated summary</button></div></form>' : '') +
-    '<p class="fine">A line that is only **bold text** is a heading. Lines starting with "- " are bullets (indent by two spaces for a sub-bullet). [hh:mm:ss] marks a time. To see the page as readers do, remove /admin from the address.</p>' +
-    '</div></main></div>';
-  return shell('Edit the summary', body);
+    `<p class="fine">Anyone who has this link can change the summary, so only share it with people you trust. Changes are saved automatically; select text to format it. The transcript itself cannot be edited. ${edited ? 'This summary has been edited; the generated one can be restored with the button above.' : 'This is the generated summary.'} To see the page as readers do, remove /admin from the address.</p>` +
+    '</div></main>';
+  const ai = aiEnabled
+    ? '<aside class="chat" aria-label="Edit with AI" hidden><div class="thread">' +
+      '<p class="fine" style="margin-top:0">Tell the AI what to change, for example "Change Toma to Thomas" or "Remove the second section". It proposes the change; nothing is saved until you accept it.</p></div>' +
+      '<div class="composer"><form id="ai-form" class="ask" autocomplete="off"><label class="sr" for="ai">What should change?</label>' +
+      '<textarea id="ai" name="ai" rows="1" maxlength="500" placeholder="Tell the AI what to change..."></textarea>' +
+      `<button class="send" type="submit" aria-label="Send">${ARROW_UP}</button></form></div></aside>`
+    : '';
+  return shell('Edit the summary', `<div class="layout${ai ? '' : ' solo'}">${note}${ai}</div><script>${EDITOR_SCRIPT}</script>`);
 }

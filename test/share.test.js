@@ -164,7 +164,7 @@ test('every page response carries the strict security headers', async () => {
   }
   const h = SECURITY_HEADERS;
   assert.match(h['Content-Security-Policy'], /default-src 'none'/);
-  assert.match(h['Content-Security-Policy'], /script-src 'sha256-[A-Za-z0-9+/]+=*'(;|$)/, 'scripts are allowed only by hash');
+  assert.match(h['Content-Security-Policy'], /script-src( 'sha256-[A-Za-z0-9+/]+=*')+(;|$)/, 'scripts are allowed only by hash');
   assert.doesNotMatch(h['Content-Security-Policy'], /unsafe-eval|script-src[^;]*(unsafe-inline|\*|https?:)/);
   assert.match(h['X-Robots-Tag'], /noindex/);
   assert.match(h['Cache-Control'], /no-store/);

@@ -80,7 +80,7 @@ export async function findSharedTranscript(db, token, nowSec) {
   const hash = await hashToken(token);
   const row = await db
     .prepare(
-      `SELECT t.id, t.started_at, t.duration_sec, t.speakers, t.language, t.summary_text, t.actions_text, t.summary_edited, t.summary_edited_at, t.embedded_at, l.expires_at, l.token_hash
+      `SELECT t.id, t.started_at, t.duration_sec, t.speakers, t.language, t.summary_text, t.actions_text, t.summary_edited, t.summary_edited_at, t.summary_version, t.embedded_at, l.expires_at, l.token_hash
        FROM share_links l JOIN transcripts t ON t.id = l.transcript_id
        WHERE l.token_hash = ? AND l.revoked_at IS NULL AND l.expires_at > ?`,
     )

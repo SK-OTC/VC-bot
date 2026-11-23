@@ -18,8 +18,8 @@ test('meetingDay and dateTable: the UTC day and the next seven days, worked out 
 });
 
 test('fixWeekdayDates: the weekday is trusted and the day corrected (the real mistake: "Friday 28 November" for the 27th)', () => {
-  const r = fixWeekdayDates('- Shreyas: audio mixing by Friday 28 November [00:32:22]\n- Rotation by Thursday 27 November', MON_23_NOV);
-  assert.equal(r.text, '- Shreyas: audio mixing by Friday 27 November [00:32:22]\n- Rotation by Thursday 26 November');
+  const r = fixWeekdayDates('- Omar: audio mixing by Friday 28 November [00:32:22]\n- Rotation by Thursday 27 November', MON_23_NOV);
+  assert.equal(r.text, '- Omar: audio mixing by Friday 27 November [00:32:22]\n- Rotation by Thursday 26 November');
   assert.equal(r.fixed, 2);
 });
 

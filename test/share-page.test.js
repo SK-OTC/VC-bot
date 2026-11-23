@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { renderNote, transcriptPage, notFoundPage, adminPage, esc, SECURITY_HEADERS } from '../src/share-page.js';
 import { privacyPage } from '../src/privacy-page.js';
 import { CHAT_SCRIPT, CHAT_SCRIPT_HASH } from '../src/chat-script.js';
+import { EDITOR_SCRIPT_HASH } from '../src/editor-script.js';
 
 const NOW = Math.floor(Date.UTC(2026, 10, 19, 12, 0, 0) / 1000);
 const base = { started_at: NOW, duration_sec: 3725, expires_at: NOW + 86_400, speakers: JSON.stringify([{ name: 'Alice' }, { name: 'Sam' }]) };
@@ -74,7 +75,7 @@ test('page: it is dark, has the top bar without any sign-in, and uses no outside
   assert.ok(!/<script[^>]*\ssrc=/i.test(html), 'no script is loaded from anywhere');
 });
 
-test('page: the single script is the one the CSP allows by hash; a page without questions has no script at all', () => {
+test('page: the single script is the one the CSP allows by hash (with the /admin editor\'s); a page without questions has no script at all', () => {
   const html = transcriptPage({ ...base, summary_text: '**Summary**\n- x' }, { enabled: true, maxChars: 500 });
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
   assert.equal((html.match(/<script/g) ?? []).length, 1, 'exactly one script tag');
@@ -83,7 +84,8 @@ test('page: the single script is the one the CSP allows by hash; a page without 
   const hash = 'sha256-' + createHash('sha256').update(scripts[0][1], 'utf8').digest('base64');
   assert.equal(CHAT_SCRIPT_HASH, hash, `CHAT_SCRIPT_HASH is out of date: it should be '${hash}'`);
   const csp = SECURITY_HEADERS['Content-Security-Policy'];
-  assert.match(csp, new RegExp(`script-src '${hash.replace(/[+/=]/g, '\\$&')}'(;|$)`));
+  const quote = (h) => h.replace(/[+/=]/g, '\\$&');
+  assert.match(csp, new RegExp(`script-src '${quote(hash)}' '${quote(EDITOR_SCRIPT_HASH)}'(;|$)`), 'exactly these two hashes');
   assert.ok(!/unsafe-inline[^;]*script|script-src[^;]*unsafe/.test(csp), 'no unsafe-inline for scripts');
   assert.match(csp, /connect-src 'self'/);
   assert.ok(!/<script/i.test(transcriptPage({ ...base, summary_text: 'x' }, { enabled: false })));
